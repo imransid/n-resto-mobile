@@ -130,5 +130,14 @@ export const migrations = schemaMigrations({
         unsafeExecuteSql('ALTER TABLE orders RENAME COLUMN created_at_new TO created_at;'),
       ],
     },
+    {
+      toVersion: 7,
+      steps: [
+        addColumns({
+          table: 'food_items',
+          columns: [{ name: 'item_image_local', type: 'string', isOptional: true }],
+        }),
+      ],
+    },
   ],
 });

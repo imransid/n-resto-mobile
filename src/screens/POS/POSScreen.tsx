@@ -11,6 +11,7 @@ import {
   Modal,
   Pressable,
   FlatList,
+  Image,
 } from 'react-native';
 import { useWindowDimensions } from 'react-native';
 import { useResponsive } from '../../hooks/useResponsive';
@@ -40,7 +41,7 @@ import {
   type Modifier,
   type CompletedOrder,
 } from '../../types/pos';
-import { DEMO_FOOD_ITEMS, CATEGORIES, DEMO_MODIFIERS } from '../../constants/demoData';
+import { useMasterData } from '../../hooks/useMasterData';
 import { storeConfig } from '../../constants/storeConfig';
 import { getTables, type TableItem } from '../../services/tablesService';
 import { getCustomers, type CustomerItem } from '../../services/customersService';
@@ -68,6 +69,11 @@ const shadowAccent = shadows.accent(ACCENT);
 const FOOD_LIST_INITIAL_NUM = 12;
 const FOOD_LIST_WINDOW_SIZE = 8;
 
+function firstWord(name: string): string {
+  const word = name.trim().split(/\s+/)[0];
+  return word ? word.charAt(0).toUpperCase() + word.slice(1).toLowerCase() : name;
+}
+
 const FoodCard = React.memo(function FoodCard({
   food,
   onAdd,
@@ -77,24 +83,43 @@ const FoodCard = React.memo(function FoodCard({
   onAdd: (f: FoodItem) => void;
   index?: number;
 }) {
-  const foodEmoji = getFoodEmoji(food.category);
+  const [imageError, setImageError] = useState(false);
+  const hasImage = Boolean(food.item_image_local?.trim()) && !imageError;
+  const imageUri = hasImage
+    ? (food.item_image_local!.startsWith('file') ? food.item_image_local! : `file://${food.item_image_local!}`)
+    : null;
+  const placeholderText = firstWord(food.item_name);
+  const showImage = Boolean(imageUri);
+
   return (
     <Animated.View
       entering={FadeInDown.delay(index * 35).duration(280).springify().damping(18)}
       style={styles.foodCardOuter}
     >
-      <PressableScale activeScale={0.96} style={styles.foodCard} onPress={() => onAdd(food)}>
-        <View style={styles.priceChip}>
-          <Text style={styles.priceChipText}>${food.price.toFixed(2)}</Text>
+      <PressableScale activeScale={0.97} style={styles.foodCard} onPress={() => onAdd(food)}>
+        <View style={styles.foodCardImageWrap}>
+          {showImage ? (
+            <Image
+              source={{ uri: imageUri! }}
+              style={StyleSheet.absoluteFill}
+              resizeMode="cover"
+              onError={() => setImageError(true)}
+            />
+          ) : null}
+          <View style={[styles.foodCardPlaceholder, showImage && styles.foodCardPlaceholderHidden]}>
+            <Text style={styles.foodCardPlaceholderText} allowFontScaling={false}>
+              {placeholderText}
+            </Text>
+          </View>
+          <View style={styles.foodCardPriceBadge}>
+            <Text style={styles.foodCardPriceText}>${food.price.toFixed(2)}</Text>
+          </View>
         </View>
-        <View style={styles.foodIconArea}>
-          <Text style={styles.foodEmoji} allowFontScaling={false}>
-            {foodEmoji}
+        <View style={styles.foodCardContent}>
+          <Text style={styles.foodCardName} numberOfLines={2}>
+            {food.item_name}
           </Text>
         </View>
-        <Text style={styles.foodName} numberOfLines={2}>
-          {food.item_name}
-        </Text>
       </PressableScale>
     </Animated.View>
   );
@@ -129,6 +154,7 @@ export default function POSScreen() {
   const insets = useSafeAreaInsets();
   const { height: screenHeight } = useWindowDimensions();
   const { numColumns, cartSheetHeightRatio, horizontalPadding, maxContentWidth, isTablet } = useResponsive();
+  const { categories, items, modifiers } = useMasterData();
   const [category, setCategory] = useState('All');
   const [search, setSearch] = useState('');
   const [showPlaceOrder, setShowPlaceOrder] = useState(false);
@@ -220,11 +246,12 @@ export default function POSScreen() {
     }
   }, [modifiersCartIndex, cart.length]);
 
+  const categoryLabel = category === 'All' ? null : (categories.find((c) => c.id === category)?.label ?? '');
   const filteredItems = useMemo(() => {
     let list =
       category === 'All'
-        ? DEMO_FOOD_ITEMS
-        : DEMO_FOOD_ITEMS.filter((f) => f.category === category);
+        ? items
+        : items.filter((f) => f.category === categoryLabel);
     if (search.trim()) {
       const q = search.toLowerCase();
       list = list.filter(
@@ -234,7 +261,7 @@ export default function POSScreen() {
       );
     }
     return list.filter((f) => f.status);
-  }, [category, search]);
+  }, [category, categoryLabel, items, search]);
 
   const subtotal = getSubtotal(cart);
   const total = getTotal(cart, discountPercent, chargePercent, taxPercent);
@@ -396,7 +423,7 @@ export default function POSScreen() {
           showsHorizontalScrollIndicator={false}
           contentContainerStyle={styles.categoryScrollContent}
         >
-          {CATEGORIES.map((c, idx) => {
+          {categories.map((c, idx) => {
             const emoji = CATEGORY_EMOJI[c.id] ?? '🍽️';
             const isActive = category === c.id;
             return (
@@ -794,7 +821,7 @@ export default function POSScreen() {
                 const removeMod = (m: Modifier) => {
                   setCartItemModifiers({ index: modifiersCartIndex, modifiers: currentMods.filter((x) => x.id !== m.id) });
                 };
-                const available = DEMO_MODIFIERS.filter((m) => !currentMods.some((x) => x.id === m.id));
+                const available = modifiers.filter((m) => !currentMods.some((x) => x.id === m.id));
                 return (
                   <>
                     <Text style={styles.modifiersSectionLabel}>On this item ({currentMods.length})</Text>
@@ -1192,12 +1219,60 @@ const styles = StyleSheet.create({
   foodCard: {
     flex: 1,
     backgroundColor: themeColors.surface,
-    borderRadius: radius.md,
-    padding: spacing.sm,
-    minHeight: 140,
-    borderWidth: 1,
-    borderColor: themeColors.borderLight,
+    borderRadius: 14,
+    overflow: 'hidden',
+    minHeight: 160,
     ...shadowSm,
+    borderWidth: 0,
+  },
+  foodCardImageWrap: {
+    width: '100%',
+    aspectRatio: 1,
+    backgroundColor: themeColors.surfaceSecondary,
+    position: 'relative',
+  },
+  foodCardPlaceholder: {
+    ...StyleSheet.absoluteFillObject,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: themeColors.surfaceTertiary,
+  },
+  foodCardPlaceholderHidden: {
+    opacity: 0,
+    pointerEvents: 'none',
+  },
+  foodCardPlaceholderText: {
+    fontSize: 20,
+    fontWeight: '700',
+    color: themeColors.textMuted,
+    letterSpacing: 0.3,
+  },
+  foodCardPriceBadge: {
+    position: 'absolute',
+    bottom: spacing.xs,
+    right: spacing.xs,
+    backgroundColor: ACCENT,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: spacing.xxs,
+    borderRadius: 8,
+    zIndex: 1,
+  },
+  foodCardPriceText: {
+    ...typography.price,
+    fontSize: 13,
+    fontWeight: '700',
+    color: themeColors.primaryContrast,
+  },
+  foodCardContent: {
+    paddingHorizontal: spacing.sm,
+    paddingVertical: spacing.xs,
+    paddingBottom: spacing.sm,
+  },
+  foodCardName: {
+    ...typography.bodySemibold,
+    fontSize: 14,
+    color: themeColors.text,
+    lineHeight: 20,
   },
   priceChip: {
     position: 'absolute',
@@ -1225,7 +1300,19 @@ const styles = StyleSheet.create({
     marginBottom: spacing.sm,
     borderWidth: 1,
     borderColor: themeColors.borderLight,
+    overflow: 'hidden',
     ...shadowSm,
+  },
+  foodImage: {
+    width: '100%',
+    height: '100%',
+    borderRadius: radius.md,
+  },
+  foodPlaceholderText: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: themeColors.textSecondary,
+    letterSpacing: 0.5,
   },
   foodEmoji: {
     fontSize: 34,

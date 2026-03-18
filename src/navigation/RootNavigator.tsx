@@ -2,7 +2,7 @@ import React from 'react';
 import { NavigationContainer } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
-import { Platform, StyleSheet } from 'react-native';
+import { View, ActivityIndicator, Platform, StyleSheet } from 'react-native';
 import Icon from 'react-native-vector-icons/Feather';
 import { useApp } from '../context/AppContext';
 import { colors } from '../theme';
@@ -42,8 +42,16 @@ function MainTabs() {
 }
 
 export default function RootNavigator() {
-  const { auth } = useApp();
+  const { auth, authHydrated } = useApp();
   const isAuthenticated = auth.isAuthenticated;
+
+  if (!authHydrated) {
+    return (
+      <View style={styles.loadingRoot}>
+        <ActivityIndicator size="large" color={colors.primary} />
+      </View>
+    );
+  }
 
   return (
     <NavigationContainer>
@@ -71,6 +79,12 @@ export default function RootNavigator() {
 }
 
 const styles = StyleSheet.create({
+  loadingRoot: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: colors.dark,
+  },
   header: {
     backgroundColor: colors.dark,
   },

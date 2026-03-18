@@ -30,6 +30,8 @@ export interface FoodItem {
   price: number;
   status: boolean;
   category: string;
+  /** Local image path (from DB); when set, POS shows image instead of placeholder */
+  item_image_local?: string | null;
 }
 
 export const DEMO_FOOD_ITEMS: FoodItem[] = [

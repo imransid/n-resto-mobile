@@ -17,18 +17,10 @@ import {
   INITIAL_POS_SESSION,
 } from '../types/pos';
 import type { FoodItem } from '../constants/demoData';
+import { type AuthState, INITIAL_AUTH } from '../types/auth';
+import { parseAuth, setStoredAuth, clearStoredAuth } from '../services/authService';
 
-export interface AuthState {
-  user: DemoUser | null;
-  accessToken: string | null;
-  isAuthenticated: boolean;
-}
-
-const INITIAL_AUTH: AuthState = {
-  user: null,
-  accessToken: null,
-  isAuthenticated: false,
-};
+export type { AuthState };
 
 function orderToCompleted(order: Order): CompletedOrder {
   return {
@@ -93,18 +85,10 @@ function parsePosSession(raw: Record<string, unknown> | null): PosSessionState {
   };
 }
 
-function parseAuth(raw: Record<string, unknown> | null): AuthState {
-  if (!raw || typeof raw !== 'object') return INITIAL_AUTH;
-  const user = raw.user as DemoUser | null | undefined;
-  return {
-    user: user && typeof user === 'object' && user.id && user.email && user.name ? user : null,
-    accessToken: typeof raw.accessToken === 'string' ? raw.accessToken : null,
-    isAuthenticated: raw.isAuthenticated === true,
-  };
-}
-
 interface AppContextValue {
   auth: AuthState;
+  /** True after we've read stored auth once — use to avoid showing Login before we know if user is logged in */
+  authHydrated: boolean;
   posSession: PosSessionState;
   orders: CompletedOrder[];
   login: (user: DemoUser, accessToken: string) => Promise<void>;
@@ -133,6 +117,7 @@ const AppContext = createContext<AppContextValue | null>(null);
 
 export function AppProvider({ children }: { children: React.ReactNode }) {
   const [auth, setAuth] = useState<AuthState>(INITIAL_AUTH);
+  const [authHydrated, setAuthHydrated] = useState(false);
   const [posSession, setPosSession] = useState<PosSessionState>(INITIAL_POS_SESSION);
   const [orders, setOrders] = useState<CompletedOrder[]>([]);
 
@@ -154,6 +139,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         }
       } catch {
         // ignore
+      } finally {
+        if (!cancelled) setAuthHydrated(true);
       }
     })();
 
@@ -185,16 +172,17 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     };
     } catch (err) {
       if (__DEV__) console.warn('AppContext: database not ready', err);
+      setAuthHydrated(true);
       return () => { cancelled = true; };
     }
   }, []);
 
   const login = useCallback(async (user: DemoUser, accessToken: string) => {
-    await setPersistedSlice('auth', { user, accessToken, isAuthenticated: true });
+    await setStoredAuth({ user, accessToken, isAuthenticated: true });
   }, []);
 
   const logout = useCallback(async () => {
-    await setPersistedSlice('auth', { user: null, accessToken: null, isAuthenticated: false });
+    await clearStoredAuth();
   }, []);
 
   const persistPos = useCallback(async (next: PosSessionState) => {
@@ -403,6 +391,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
   const value: AppContextValue = {
     auth,
+    authHydrated,
     posSession,
     orders,
     login,

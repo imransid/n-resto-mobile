@@ -20,6 +20,10 @@ export default class FoodItem extends Model {
   @field('category_id')
   category_id!: string;
 
+  /** Local file path after download (e.g. Documents/NRestoMobile/{id}.jpg) */
+  @field('item_image_local')
+  item_image_local!: string | null;
+
   @relation('food_categories', 'category_id')
   category!: Relation<FoodCategory>;
 }

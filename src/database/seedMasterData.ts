@@ -43,6 +43,7 @@ export async function seedMasterDataIfEmpty(): Promise<boolean> {
         item.price = f.price;
         item.status = f.status;
         item.category_id = categoryId;
+        item.item_image_local = null;
       });
     }
 

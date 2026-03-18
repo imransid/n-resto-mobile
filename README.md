@@ -108,10 +108,32 @@ yarn android:release
 | waiter@demo.com    | Pass@1234 |
 | deliveryman@demo.com | Pass@1234 |
 
+## Auth (best way to manage)
+
+Auth is centralized so one place owns state, persistence, and API.
+
+- **State:** `AuthState` (`user`, `accessToken`, `isAuthenticated`) lives in **AppContext** and is the single source of truth for the UI.
+- **Persistence:** **authService** (`src/services/authService.ts`) is the only place that reads/writes auth. It uses WatermelonDB KeyValue under the key `auth`. Login and logout go through `setStoredAuth` / `clearStoredAuth`.
+- **Flow:** On load, AppContext subscribes to the `key_value` table for `auth`; when the stored value changes, `parseAuth` turns it into `AuthState` and context updates. LoginScreen calls `login(user, accessToken)` → authService persists → subscription fires → navigator shows Main. Logout calls `logout()` → authService clears → subscription fires → navigator shows Login.
+- **Usage:** Use `useApp()` for full context or `useAuth()` when you only need `{ user, accessToken, isAuthenticated, login, logout }` (e.g. LoginScreen, LogoutButton, RootNavigator).
+
+**Files**
+
+- `src/types/auth.ts` – `AuthState`, `StoredAuthPayload`, `INITIAL_AUTH`.
+- `src/services/authService.ts` – `getStoredAuth()`, `setStoredAuth()`, `clearStoredAuth()`, `parseAuth()`.
+- `src/context/AppContext.tsx` – holds auth state, subscribes to DB, exposes `login` / `logout` that delegate to authService.
+- `src/hooks/useAuth.ts` – thin hook that returns auth + login + logout from context.
+
+**Production**
+
+- Store **accessToken** (and refreshToken if any) in **react-native-keychain** instead of KeyValue; keep `user` in KeyValue or in Keychain. Implement `getStoredAuth` / `setStoredAuth` / `clearStoredAuth` to read/write Keychain + KeyValue so the rest of the app stays unchanged.
+- For real API login: add `loginWithCredentials(email, password)` in authService that calls your API, then `setStoredAuth({ user, accessToken, isAuthenticated: true })`. Optionally add token refresh and an API client that attaches the token and retries on 401 with refresh.
+
 ## Project structure
 
 - `src/constants/demoData.ts` – Demo users, food items, categories, service charge constant.
-- `src/store/` – Redux store: `authSlice` (login/logout), `posSlice` (cart, order type, discount/charge/tax, totals).
+- `src/context/AppContext.tsx` – Auth, POS session, orders; persists via WatermelonDB KeyValue and authService.
+- `src/services/authService.ts` – Auth persistence (get/set/clear); single place for auth storage.
 - `src/navigation/` – Root navigator (Login stack vs Main tabs), Main tabs (POS, Orders), Logout button.
 - `src/screens/LoginScreen.tsx` – Email/password, Reanimated entrance.
 - `src/screens/POS/POSScreen.tsx` – Categories, order type, search, food grid, cart, service charge, submit.
@@ -160,6 +182,25 @@ The app includes a **native thermal printer bridge** (ESC/POS) for 58mm/80mm rec
 - `src/constants/exampleInvoice.ts` – Example payload for testing.
 - **Android**: `ThermalPrinterModule.kt` (ESC/POS + Bluetooth SPP), `ThermalPrinterPackage.kt`; registered in `MainApplication.kt`.
 - **iOS**: `ThermalPrinterModule.m` (ESC/POS + TCP socket); added to the Xcode target.
+
+## Debugging: Database and image download
+
+### Database Inspector shows "Nothing to show"
+
+- **WatermelonDB** uses its own SQLite file (JSI/native). Android Studio’s **Database Inspector** may not list it, or the DB is created only after the app has run and completed init.
+- Ensure the app has fully started (splash finished, then at least one screen loaded). In **Logcat** (filter by `NResto` or `ReactNativeJS`), look for:
+  - `[NResto] DB seeded with demo data` or `[NResto] DB seeded (no API config)` → DB was populated.
+  - `[NResto] loadMasterDataOnInit failed` or `[NResto] hasMasterData/seed failed` → init or seed failed (check stack trace).
+- If you need to inspect data, query WatermelonDB from your code (e.g. a debug screen or `database.get('food_categories').query().fetch()` and log the result).
+
+### Image download (background thread)
+
+- Images are downloaded only when **master data comes from the API** (internet reachable and `graphqlApiBase` set) and the API returns items with `item_image` set.
+- In Logcat look for:
+  - `[NResto] Image download: starting N on native thread` → background download started.
+  - `[NResto] Image download: native completed N saved` → N files saved under **Documents/NRestoMobile** (filename = item id).
+- If you see `[NResto] Image download: no items with item_image` → API response has no image URLs; set `item_image` in your backend or use demo data.
+- On a **physical device**, `graphqlApiBase: 'http://localhost:3399/graphql'` is not reachable; use your machine’s LAN IP (e.g. `http://192.168.1.x:3399/graphql`) and set `assetsBaseUrl` to the same base for image URLs.
 
 ## Branding
 

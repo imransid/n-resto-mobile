@@ -22,6 +22,10 @@ export interface StoreConfig {
   tablesApiBase?: string;
   /** API base URL for fetching customers. When set, getCustomers() uses GET {customersApiBase}/customers */
   customersApiBase?: string;
+  /** GraphQL API URL for getMasterData (e.g. 'https://api.example.com/graphql'). When set, app loads master data on init. */
+  graphqlApiBase?: string;
+  /** Base URL for image assets (e.g. 'https://api.example.com'). Used when item_image is a path like /uploads/... */
+  assetsBaseUrl?: string;
 }
 
 /** Defaults; can be overwritten by API. */
@@ -37,4 +41,6 @@ export const storeConfig: StoreConfig = {
   enabledPaymentMethods: ['CASH'],
   tablesApiBase: '',
   customersApiBase: '',
+  graphqlApiBase: 'http://localhost:3399/graphql',
+  assetsBaseUrl: '',
 };

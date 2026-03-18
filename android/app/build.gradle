@@ -6,6 +6,9 @@ apply plugin: "com.facebook.react"
 project.ext.REACT_NATIVE_NODE_MODULES_DIR = file("../../node_modules/react-native")
 project.ext.REACT_NATIVE_WORKLETS_NODE_MODULES_DIR = file("../../node_modules/react-native-worklets")
 
+/** Full path to node when Android Studio is opened from Finder (fixes "command node" error). Set in gradle.properties as node.binary= */
+def nodeBinary = project.hasProperty("node.binary") ? project.getProperty("node.binary") : null
+
 /**
  * This is the configuration block to customize your React Native Android app.
  * By default you don't need to apply any configuration, just uncomment the lines you need.
@@ -27,9 +30,8 @@ react {
     //   If you add flavors like lite, prod, etc. you'll have to list your debuggableVariants.
     // debuggableVariants = ["liteDebug", "liteDebugOptimized", "prodDebug", "prodDebugOptimized"]
 
-    /* Bundling */
-    //   A list containing the node command and its flags. Default is just 'node'.
-    // nodeExecutableAndArgs = ["node"]
+    /* Bundling: use full path to node when set (fixes error=2 when opening Android Studio from Finder) */
+    nodeExecutableAndArgs = nodeBinary != null && nodeBinary != "" ? [nodeBinary] : ["node"]
     //
     //   The command to run when bundling. By default is 'bundle'
     // bundleCommand = "ram-bundle"
