@@ -4,6 +4,7 @@
  */
 
 import { NativeModules, Platform } from 'react-native';
+import type { OrderType } from '../types/pos';
 
 /** Single line item for receipt (Gentle Park style: Item, Qty, Price, VAT%, Dis%, Total Price) */
 export interface InvoiceItem {
@@ -35,9 +36,14 @@ export interface InvoicePayload {
   binTax?: string;
   /** "Served by: Admin" */
   servedBy?: string;
-  /** "Table: 1" when set; otherwise orderTypeLabel e.g. "Acc T/Away" */
+  /** Numeric table when purely numeric (legacy / native fallback). */
   tableNumber?: number | null;
-  /** e.g. "Dine In", "Acc T/Away", "Pick Up" */
+  /**
+   * Human-readable table for receipt (e.g. "12", "A1", "Terrace 3").
+   * When set, receipt shows a dedicated "Table: …" line after order type.
+   */
+  tableDisplay?: string | null;
+  /** e.g. "Dine In", "Pick Up", "Delivery" */
   orderTypeLabel?: string;
   /** Time only for service line e.g. "13:48:23" */
   orderTime?: string;
@@ -156,6 +162,7 @@ function normalizeInvoice(invoice: InvoicePayload): InvoicePayload {
     binTax: invoice.binTax,
     servedBy: invoice.servedBy,
     tableNumber: invoice.tableNumber,
+    tableDisplay: invoice.tableDisplay != null && String(invoice.tableDisplay).trim() !== '' ? String(invoice.tableDisplay).trim() : undefined,
     orderTypeLabel: invoice.orderTypeLabel,
     orderTime: invoice.orderTime,
     sp: invoice.sp,
@@ -192,6 +199,23 @@ const DEFAULT_VAT_DISCLAIMER =
   '*Amended VAT Law Notification SRO. No-19 (22 Jan 25) VAT is charged as per Government.*';
 const DEFAULT_POWERED_BY = 'Powered by: BOLT Fusion Tech [boltfusiontech.com]';
 
+/** Table + numeric hint for thermal receipt (preview + native). */
+export function invoiceTableFieldsForOrder(order: { orderType: OrderType; tableNumber: string }): {
+  tableNumber: number | null;
+  tableDisplay: string | undefined;
+} {
+  const raw = (order.tableNumber ?? '').trim();
+  if (order.orderType !== 'DINE_IN' || raw === '') {
+    return { tableNumber: null, tableDisplay: undefined };
+  }
+  const n = parseInt(raw, 10);
+  const purePositiveInt = /^\d+$/.test(raw) && !Number.isNaN(n) && n > 0;
+  return {
+    tableNumber: purePositiveInt ? n : null,
+    tableDisplay: raw,
+  };
+}
+
 /**
  * Build InvoicePayload from app's CompletedOrder — SplitAbility-style receipt.
  * Store fields come from params (e.g. store config or API). VAT from params.vatAmount when sent from API.
@@ -206,6 +230,8 @@ export function buildInvoiceFromOrder(params: {
   binTax?: string;
   servedBy?: string;
   tableNumber?: number | null;
+  /** Shown as "Table: …" on its own line after order type */
+  tableDisplay?: string | null;
   orderTypeLabel?: string;
   items: { name: string; price: number; qty: number }[];
   total: number;
@@ -257,6 +283,10 @@ export function buildInvoiceFromOrder(params: {
     binTax: params.binTax,
     servedBy: params.servedBy ?? 'Admin',
     tableNumber: params.tableNumber ?? null,
+    tableDisplay:
+      params.tableDisplay != null && String(params.tableDisplay).trim() !== ''
+        ? String(params.tableDisplay).trim()
+        : undefined,
     orderTypeLabel: params.orderTypeLabel ?? 'Dine In',
     sp,
     cardNo: '',

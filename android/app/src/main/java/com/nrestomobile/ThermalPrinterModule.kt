@@ -146,16 +146,23 @@ class ThermalPrinterModule(reactContext: ReactApplicationContext) :
     invoice.getString("invoiceNumber")?.takeIf { it.isNotBlank() }?.let { emitStr("Order #: $it"); lineFeed() }
     invoice.getString("customerName")?.trim()?.takeIf { it.isNotBlank() }?.let { emitStr("Customer: $it"); lineFeed() }
 
-    // Table / order type + time
+    // Order type + time (always), then table on its own line when set
     val tableNum = if (invoice.hasKey("tableNumber") && !invoice.isNull("tableNumber")) invoice.getDouble("tableNumber").toInt() else null
+    val tableDisplay = invoice.getString("tableDisplay")?.trim()?.takeIf { it.isNotBlank() }
     val orderTypeLabel = invoice.getString("orderTypeLabel") ?: "Dine In"
     val orderTime = invoice.getString("orderTime") ?: ""
-    if (tableNum != null && tableNum > 0) {
-      emitStr(if (orderTime.isNotBlank()) "Table: $tableNum  $orderTime" else "Table: $tableNum")
-    } else {
-      emitStr(if (orderTime.isNotBlank()) "$orderTypeLabel  $orderTime" else orderTypeLabel)
-    }
+    emitStr(if (orderTime.isNotBlank()) "$orderTypeLabel  $orderTime" else orderTypeLabel)
     lineFeed()
+    when {
+      tableDisplay != null -> {
+        emitStr("Table: ${tableDisplay.take(WIDTH_CHARS - 8)}")
+        lineFeed()
+      }
+      tableNum != null && tableNum > 0 -> {
+        emitStr("Table: $tableNum")
+        lineFeed()
+      }
+    }
     lineFeed()
 
     // Items — name left, "qty x price" or "price" right

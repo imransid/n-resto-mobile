@@ -14,7 +14,10 @@ export interface CartItem {
 
 export function modifierIdsKey(mods: Modifier[] | undefined): string {
   if (!mods?.length) return '';
-  return [...mods].map((m) => m.id).sort().join(',');
+  return [...mods]
+    .map(m => m.id)
+    .sort()
+    .join(',');
 }
 
 const ORDER_ID_CHARS = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ';
@@ -22,9 +25,11 @@ const ORDER_ID_CHARS = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ';
 export function generateOrderId(): string {
   let suffix = '';
   for (let i = 0; i < 8; i++) {
-    suffix += ORDER_ID_CHARS.charAt(Math.floor(Math.random() * ORDER_ID_CHARS.length));
+    suffix += ORDER_ID_CHARS.charAt(
+      Math.floor(Math.random() * ORDER_ID_CHARS.length),
+    );
   }
-  return `ORD${suffix}`;
+  return `ORD${suffix}BOLT`;
 }
 
 export type OrderType = 'DINE_IN' | 'TAKEAWAY' | 'DELIVERY';
@@ -54,8 +59,10 @@ export interface CompletedOrder {
   total: number;
   paymentMethod: PaymentMethod;
   orderType: OrderType;
-  tableNumber?: string;
-  customerName?: string;
+  tableNumber: string;
+  customerName: string;
+  userId: string;
+  companyId: string;
   orderNotes?: string;
   status?: OrderStatus;
 }
@@ -79,7 +86,10 @@ export const APP_SERVICE_CHARGE_VALUE = APP_SERVICE_CHARGE;
 export function getSubtotal(cart: CartItem[]): number {
   return cart.reduce((s, x) => {
     const base = x.food.price * x.qty;
-    const modTotal = (x.modifiers ?? []).reduce((m, mod) => m + mod.price * x.qty, 0);
+    const modTotal = (x.modifiers ?? []).reduce(
+      (m, mod) => m + mod.price * x.qty,
+      0,
+    );
     return s + base + modTotal;
   }, 0);
 }
@@ -88,14 +98,18 @@ export function getTotal(
   cart: CartItem[],
   discountPercent: number,
   chargePercent: number,
-  taxPercent: number
+  taxPercent: number,
 ): number {
   const subtotal = getSubtotal(cart);
   const discountAmt = subtotal * (discountPercent / 100);
   const afterDiscount = subtotal - discountAmt;
   const chargeAmt = afterDiscount * (chargePercent / 100);
   const taxAmt = afterDiscount * (taxPercent / 100);
-  return Math.round((afterDiscount + chargeAmt + taxAmt + APP_SERVICE_CHARGE) * 100) / 100;
+  return (
+    Math.round(
+      (afterDiscount + chargeAmt + taxAmt + APP_SERVICE_CHARGE) * 100,
+    ) / 100
+  );
 }
 
 export const INITIAL_POS_SESSION: PosSessionState = {

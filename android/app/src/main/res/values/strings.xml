@@ -1,3 +1,5 @@
 <resources>
     <string name="app_name">NRestoMobile</string>
+    <string name="order_sync_notification_title">Order sync</string>
+    <string name="order_sync_notification_text">Uploading orders in the background…</string>
 </resources>

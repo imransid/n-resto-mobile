@@ -1,10 +1,9 @@
 /**
- * Auth hook — use when you only need auth state and actions.
- * For full app context (cart, orders, etc.) use useApp().
+ * Auth only — does not subscribe to POS cart / orders (see `AuthContext`).
+ * For cart, orders, and POS session use `useApp()`.
  */
-import { useApp } from '../context/AppContext';
+import { useAuthContext } from '../context/AuthContext';
 
 export function useAuth() {
-  const { auth, login, logout } = useApp();
-  return { ...auth, login, logout };
+  return useAuthContext();
 }

@@ -12,14 +12,14 @@ import {
 } from 'react-native';
 import Animated, { FadeInDown, FadeInUp } from 'react-native-reanimated';
 import Icon from 'react-native-vector-icons/Feather';
-import { useApp } from '../context/AppContext';
+import { useAuth } from '../hooks/useAuth';
 import { DEMO_USERS } from '../constants/demoData';
 import { colors, spacing, radius, typography } from '../theme';
 import { useResponsive } from '../hooks/useResponsive';
 import { PressableScale } from '../components/ui';
 
 export default function LoginScreen() {
-  const { login } = useApp();
+  const { login } = useAuth();
   const { horizontalPadding, maxContentWidth, isTablet } = useResponsive();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');

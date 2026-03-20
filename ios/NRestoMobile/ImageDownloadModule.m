@@ -32,6 +32,7 @@ RCT_EXPORT_MODULE(ImageDownload)
 
 RCT_EXPORT_METHOD(downloadImages:(NSArray *)items
                   imagesDir:(NSString *)imagesDir
+                  authorization:(NSString *)authorization
                   resolve:(RCTPromiseResolveBlock)resolve
                   reject:(RCTPromiseRejectBlock)reject) {
   dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
@@ -49,13 +50,16 @@ RCT_EXPORT_METHOD(downloadImages:(NSArray *)items
       resolve(@[]);
       return;
     }
+    NSString *authHeader = ([authorization isKindOfClass:[NSString class]] && authorization.length)
+      ? [authorization stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]]
+      : nil;
     NSMutableArray *results = [NSMutableArray array];
     for (NSDictionary *item in items) {
       NSString *imageUrl = item[@"imageUrl"];
       NSString *itemId = item[@"itemId"];
       if (![imageUrl isKindOfClass:[NSString class]] || !imageUrl.length ||
           ![itemId isKindOfClass:[NSString class]] || !itemId.length) continue;
-      NSString *localPath = [self downloadOne:imageUrl itemId:itemId folderPath:folderPath];
+      NSString *localPath = [self downloadOne:imageUrl itemId:itemId folderPath:folderPath authorization:authHeader];
       if (localPath.length) {
         [results addObject:@{ @"itemId": itemId, @"localPath": localPath }];
       }
@@ -75,9 +79,15 @@ RCT_EXPORT_METHOD(downloadImages:(NSArray *)items
   return @".jpg";
 }
 
-- (NSString *)downloadOne:(NSString *)imageUrl itemId:(NSString *)itemId folderPath:(NSString *)folderPath {
+- (NSString *)downloadOne:(NSString *)imageUrl itemId:(NSString *)itemId folderPath:(NSString *)folderPath authorization:(NSString *)authorization {
   NSURL *url = [NSURL URLWithString:imageUrl];
   if (!url) return nil;
+  NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:url];
+  [request setHTTPMethod:@"GET"];
+  [request setTimeoutInterval:20];
+  if (authorization.length) {
+    [request setValue:authorization forHTTPHeaderField:@"Authorization"];
+  }
   NSURLSessionConfiguration *config = [NSURLSessionConfiguration defaultSessionConfiguration];
   config.timeoutIntervalForRequest = 20;
   config.timeoutIntervalForResource = 60;
@@ -85,7 +95,7 @@ RCT_EXPORT_METHOD(downloadImages:(NSArray *)items
   dispatch_semaphore_t sema = dispatch_semaphore_create(0);
   __block NSData *data = nil;
   __block NSInteger statusCode = 0;
-  [[session dataTaskWithURL:url completionHandler:^(NSData *d, NSURLResponse *r, NSError *e) {
+  [[session dataTaskWithRequest:request completionHandler:^(NSData *d, NSURLResponse *r, NSError *e) {
     if ([r isKindOfClass:[NSHTTPURLResponse class]]) statusCode = [(NSHTTPURLResponse *)r statusCode];
     if (!e && statusCode == 200 && d.length) data = d;
     dispatch_semaphore_signal(sema);

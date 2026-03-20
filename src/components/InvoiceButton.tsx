@@ -33,6 +33,7 @@ export interface InvoiceButtonProps {
     binTax?: string;
     servedBy?: string;
     tableNumber?: number | null;
+    tableDisplay?: string | null;
     orderTypeLabel?: string;
     items: { name: string; price: number; qty: number }[];
     total: number;
@@ -86,6 +87,7 @@ export function InvoiceButton({
             binTax: orderPayload.binTax,
             servedBy: orderPayload.servedBy,
             tableNumber: orderPayload.tableNumber,
+            tableDisplay: orderPayload.tableDisplay,
             orderTypeLabel: orderPayload.orderTypeLabel,
             items: orderPayload.items,
             total: orderPayload.total,

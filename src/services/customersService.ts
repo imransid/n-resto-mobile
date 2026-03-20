@@ -1,7 +1,10 @@
 /**
  * Customers list for POS — customer dropdown.
- * Fetch from API when base URL is set; otherwise use fallback list.
+ * Fetch from API when base URL is set; otherwise prefer WatermelonDB rows synced from getMasterData, then demo list.
  */
+
+import { database } from '../database/databaseInstance';
+import type Customer from '../database/Customer';
 
 export interface CustomerItem {
   id: string;
@@ -42,4 +45,28 @@ export async function getCustomers(apiBase?: string): Promise<CustomerItem[]> {
   } catch {
     return FALLBACK_CUSTOMERS;
   }
+}
+
+/** When REST customers API is not configured, load customers synced from Food Service `getMasterData.customerList`. */
+export async function getCustomersFromDb(): Promise<CustomerItem[]> {
+  const rows = await database.get<Customer>('customers').query().fetch();
+  return rows.map((r) => ({
+    id: r.id,
+    name: r.name,
+    phone: r.phone ?? undefined,
+    email: r.email ?? undefined,
+  }));
+}
+
+/**
+ * POS: REST API when `customersApiBase` is set; otherwise DB (master data) if non-empty, else demo list.
+ */
+export async function getCustomersForPos(customersApiBase?: string): Promise<CustomerItem[]> {
+  const base = (customersApiBase ?? '').trim();
+  if (base) {
+    return getCustomers(base);
+  }
+  const fromDb = await getCustomersFromDb();
+  if (fromDb.length > 0) return fromDb;
+  return FALLBACK_CUSTOMERS;
 }

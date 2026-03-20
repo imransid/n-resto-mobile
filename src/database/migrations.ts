@@ -139,5 +139,58 @@ export const migrations = schemaMigrations({
         }),
       ],
     },
+    {
+      toVersion: 8,
+      steps: [
+        addColumns({
+          table: 'orders',
+          columns: [{ name: 'company_id', type: 'string', isOptional: true, isIndexed: true }],
+        }),
+      ],
+    },
+    {
+      toVersion: 9,
+      steps: [
+        createTable({
+          name: 'total_orders',
+          columns: [
+            { name: 'order_count', type: 'number' },
+            { name: 'paid_count', type: 'number' },
+            { name: 'unpaid_count', type: 'number' },
+            { name: 'total_value', type: 'number' },
+          ],
+        }),
+      ],
+    },
+    {
+      toVersion: 10,
+      steps: [
+        unsafeExecuteSql('ALTER TABLE total_orders DROP COLUMN total_value;'),
+      ],
+    },
+    {
+      toVersion: 11,
+      steps: [
+        createTable({
+          name: 'order_sync_queue',
+          columns: [{ name: 'order_id', type: 'string', isIndexed: true }],
+        }),
+      ],
+    },
+    {
+      toVersion: 12,
+      steps: [
+        addColumns({
+          table: 'orders',
+          columns: [{ name: 'paid_at', type: 'number', isOptional: true }],
+        }),
+        unsafeExecuteSql(
+          `UPDATE orders SET paid_at = created_at WHERE status = 'PAID' AND paid_at IS NULL`
+        ),
+        unsafeExecuteSql(
+          `CREATE INDEX IF NOT EXISTS idx_orders_status_paid_at ON orders(status, paid_at)`
+        ),
+      ],
+    },
   ],
 });

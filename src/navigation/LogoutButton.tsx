@@ -1,11 +1,11 @@
 import React from 'react';
 import { TouchableOpacity, Text, StyleSheet } from 'react-native';
 import Icon from 'react-native-vector-icons/Feather';
-import { useApp } from '../context/AppContext';
+import { useAuth } from '../hooks/useAuth';
 import { colors, spacing, radius, typography } from '../theme';
 
 export default function LogoutButton() {
-  const { logout } = useApp();
+  const { logout } = useAuth();
   return (
     <TouchableOpacity style={styles.btn} onPress={() => logout()} activeOpacity={0.78}>
       <Icon name="log-out" size={20} color={colors.primaryContrast} />

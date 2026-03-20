@@ -137,15 +137,20 @@ RCT_EXPORT_METHOD(getAvailablePrinters:(RCTPromiseResolveBlock)resolve
   if (customerName.length) { emitStr([@"Customer: " stringByAppendingString:customerName]); lineFeed(); }
 
   NSNumber *tableNum = invoice[@"tableNumber"];
+  NSString *tableDisplay = [invoice[@"tableDisplay"] isKindOfClass:[NSString class]] ? [invoice[@"tableDisplay"] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]] : @"";
   NSString *orderTypeLabel = invoice[@"orderTypeLabel"];
   if (!orderTypeLabel.length) orderTypeLabel = @"Dine In";
   NSString *orderTime = invoice[@"orderTime"] ?: @"";
-  if (tableNum != nil && [tableNum intValue] > 0) {
-    emitStr(orderTime.length ? [NSString stringWithFormat:@"Table: %@  %@", tableNum, orderTime] : [NSString stringWithFormat:@"Table: %@", tableNum]);
-  } else {
-    emitStr(orderTime.length ? [NSString stringWithFormat:@"%@  %@", orderTypeLabel, orderTime] : orderTypeLabel);
-  }
+  emitStr(orderTime.length ? [NSString stringWithFormat:@"%@  %@", orderTypeLabel, orderTime] : orderTypeLabel);
   lineFeed();
+  if (tableDisplay.length) {
+    NSString *td = tableDisplay.length > W - 8 ? [tableDisplay substringToIndex:W - 8] : tableDisplay;
+    emitStr([NSString stringWithFormat:@"Table: %@", td]);
+    lineFeed();
+  } else if (tableNum != nil && [tableNum intValue] > 0) {
+    emitStr([NSString stringWithFormat:@"Table: %@", tableNum]);
+    lineFeed();
+  }
   lineFeed();
 
   NSArray *items = invoice[@"items"];

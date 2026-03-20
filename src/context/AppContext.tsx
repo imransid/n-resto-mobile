@@ -1,10 +1,20 @@
-import React, { createContext, useCallback, useContext, useEffect, useState } from 'react';
+import React, {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import { Q } from '@nozbe/watermelondb';
 import { database } from '../database/databaseInstance';
 import { getPersistedSlice, setPersistedSlice } from '../database';
 import type KeyValue from '../database/KeyValue';
 import type Order from '../database/Order';
-import type { DemoUser } from '../constants/demoData';
+import type OrderSyncQueue from '../database/OrderSyncQueue';
+import { enqueueOrderForSync } from '../database/orderSyncQueueHelpers';
+import { syncTotalOrderAggregateFromOrders } from '../database/syncTotalOrderAggregate';
 import {
   type CartItem,
   type CompletedOrder,
@@ -17,10 +27,11 @@ import {
   INITIAL_POS_SESSION,
 } from '../types/pos';
 import type { FoodItem } from '../constants/demoData';
-import { type AuthState, INITIAL_AUTH } from '../types/auth';
-import { parseAuth, setStoredAuth, clearStoredAuth } from '../services/authService';
-
-export type { AuthState };
+import { storeConfig } from '../constants/storeConfig';
+import {
+  requestOrderUploadNow,
+  scheduleOrderSync,
+} from '../services/orderBackgroundSyncService';
 
 function orderToCompleted(order: Order): CompletedOrder {
   return {
@@ -30,8 +41,10 @@ function orderToCompleted(order: Order): CompletedOrder {
     total: order.total,
     paymentMethod: order.payment_method as PaymentMethod,
     orderType: order.order_type as OrderType,
-    tableNumber: order.table_number ?? undefined,
-    customerName: order.customer_name ?? undefined,
+    tableNumber: order.table_number ?? '',
+    customerName: order.customer_name ?? '',
+    userId: order.created_by ?? '',
+    companyId: order.company_id ?? '',
     orderNotes: order.order_notes ?? undefined,
     status: (order.status as OrderStatus) ?? 'PENDING',
   };
@@ -45,7 +58,11 @@ function normalizeCartItem(entry: unknown): CartItem | null {
   const f = foodRaw as Record<string, unknown>;
   const id = typeof f.id === 'string' ? f.id : String(f.id ?? '');
   const item_name = typeof f.item_name === 'string' ? f.item_name : String(f.item_name ?? '');
-  const price = typeof f.price === 'number' ? f.price : Number(f.price) || 0;
+  const rawPrice = f.price;
+  const price =
+    typeof rawPrice === 'number' && Number.isFinite(rawPrice)
+      ? rawPrice
+      : Number(String(rawPrice ?? '').replace(/,/g, '')) || 0;
   if (!id && !item_name) return null;
   const qty = typeof o.qty === 'number' && o.qty > 0 ? o.qty : 1;
   const modsRaw = Array.isArray(o.modifiers) ? o.modifiers : [];
@@ -54,7 +71,10 @@ function normalizeCartItem(entry: unknown): CartItem | null {
     .map((m) => ({
       id: typeof m.id === 'string' ? m.id : String(m.id ?? ''),
       name: typeof m.name === 'string' ? m.name : String(m.name ?? ''),
-      price: typeof m.price === 'number' ? m.price : Number(m.price) || 0,
+      price:
+        typeof m.price === 'number' && Number.isFinite(m.price)
+          ? m.price
+          : Number(String(m.price ?? '').replace(/,/g, '')) || 0,
     }));
   const food: FoodItem = {
     id,
@@ -86,21 +106,16 @@ function parsePosSession(raw: Record<string, unknown> | null): PosSessionState {
 }
 
 interface AppContextValue {
-  auth: AuthState;
-  /** True after we've read stored auth once — use to avoid showing Login before we know if user is logged in */
-  authHydrated: boolean;
   posSession: PosSessionState;
   orders: CompletedOrder[];
-  login: (user: DemoUser, accessToken: string) => Promise<void>;
-  logout: () => Promise<void>;
   addToCart: (payload: { food: FoodItem; qty?: number; modifiers?: Modifier[] }) => Promise<void>;
   updateCartItemQty: (payload: { index: number; qty: number }) => Promise<void>;
   setCartItemModifiers: (payload: { index: number; modifiers: Modifier[] }) => Promise<void>;
   removeFromCartByIndex: (index: number) => Promise<void>;
   clearCart: () => Promise<void>;
   setOrderType: (orderType: OrderType) => Promise<void>;
-  setTableNumber: (tableNumber: string) => Promise<void>;
-  setCustomerName: (customerName: string) => Promise<void>;
+  setTableNumber: (tableNumber: string) => void;
+  setCustomerName: (customerName: string) => void;
   setDiscountPercent: (value: number) => Promise<void>;
   setChargePercent: (value: number) => Promise<void>;
   setTaxPercent: (value: number) => Promise<void>;
@@ -115,22 +130,19 @@ interface AppContextValue {
 
 const AppContext = createContext<AppContextValue | null>(null);
 
+const AGGREGATE_DEBOUNCE_MS = 320;
+
 export function AppProvider({ children }: { children: React.ReactNode }) {
-  const [auth, setAuth] = useState<AuthState>(INITIAL_AUTH);
-  const [authHydrated, setAuthHydrated] = useState(false);
   const [posSession, setPosSession] = useState<PosSessionState>(INITIAL_POS_SESSION);
   const [orders, setOrders] = useState<CompletedOrder[]>([]);
+  const aggregateTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     let cancelled = false;
     (async () => {
       try {
-        const [authRaw, posRaw] = await Promise.all([
-          getPersistedSlice('auth'),
-          getPersistedSlice('pos'),
-        ]);
+        const posRaw = await getPersistedSlice('pos');
         if (!cancelled) {
-          setAuth(parseAuth(authRaw));
           const parsed = parsePosSession(posRaw);
           setPosSession(parsed);
           if (posRaw == null) {
@@ -139,50 +151,46 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         }
       } catch {
         // ignore
-      } finally {
-        if (!cancelled) setAuthHydrated(true);
       }
     })();
 
     try {
       const kv = database.get<KeyValue>('key_value');
-    const subAuth = kv.query(Q.where('key', 'auth')).observe().subscribe((records) => {
-      const r = records[0];
-      const raw = r?.value != null ? (JSON.parse(r.value) as Record<string, unknown>) : null;
-      setAuth(parseAuth(raw));
-    });
-    const subPos = kv.query(Q.where('key', 'pos')).observe().subscribe((records) => {
-      const r = records[0];
-      const raw = r?.value != null ? (JSON.parse(r.value) as Record<string, unknown>) : null;
-      setPosSession(parsePosSession(raw));
-    });
-    const ordersCollection = database.get<Order>('orders');
-    const subOrders = ordersCollection
-      .query()
-      .observe()
-      .subscribe((orderRecords) => {
-        const sorted = [...orderRecords].sort((a, b) => b.created_at - a.created_at);
-        setOrders(sorted.map(orderToCompleted));
+      const subPos = kv.query(Q.where('key', 'pos')).observe().subscribe((records) => {
+        const r = records[0];
+        const raw = r?.value != null ? (JSON.parse(r.value) as Record<string, unknown>) : null;
+        setPosSession(parsePosSession(raw));
       });
-    return () => {
-      cancelled = true;
-      subAuth.unsubscribe();
-      subPos.unsubscribe();
-      subOrders.unsubscribe();
-    };
+      const ordersCollection = database.get<Order>('orders');
+      const subOrders = ordersCollection
+        .query()
+        .observe()
+        .subscribe((orderRecords) => {
+          const sorted = [...orderRecords].sort((a, b) => b.created_at - a.created_at);
+          setOrders(sorted.map(orderToCompleted));
+          if (aggregateTimerRef.current != null) clearTimeout(aggregateTimerRef.current);
+          aggregateTimerRef.current = setTimeout(() => {
+            aggregateTimerRef.current = null;
+            syncTotalOrderAggregateFromOrders(sorted).catch((err) => {
+              if (__DEV__) console.warn('syncTotalOrderAggregateFromOrders', err);
+            });
+          }, AGGREGATE_DEBOUNCE_MS);
+        });
+      return () => {
+        cancelled = true;
+        if (aggregateTimerRef.current != null) {
+          clearTimeout(aggregateTimerRef.current);
+          aggregateTimerRef.current = null;
+        }
+        subPos.unsubscribe();
+        subOrders.unsubscribe();
+      };
     } catch (err) {
       if (__DEV__) console.warn('AppContext: database not ready', err);
-      setAuthHydrated(true);
-      return () => { cancelled = true; };
+      return () => {
+        cancelled = true;
+      };
     }
-  }, []);
-
-  const login = useCallback(async (user: DemoUser, accessToken: string) => {
-    await setStoredAuth({ user, accessToken, isAuthenticated: true });
-  }, []);
-
-  const logout = useCallback(async () => {
-    await clearStoredAuth();
   }, []);
 
   const persistPos = useCallback(async (next: PosSessionState) => {
@@ -275,16 +283,37 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   }, [persistPos, refreshPosFromDb]);
 
   const setOrderType = useCallback(
-    async (orderType: OrderType) => await persistPos({ ...posSession, orderType }),
-    [posSession, persistPos]
+    async (orderType: OrderType) => {
+      setPosSession((prev) => {
+        if (prev.orderType === orderType) return prev;
+        const next = { ...prev, orderType };
+        persistPos(next).then(refreshPosFromDb);
+        return next;
+      });
+    },
+    [persistPos, refreshPosFromDb]
   );
   const setTableNumber = useCallback(
-    async (tableNumber: string) => await persistPos({ ...posSession, tableNumber }),
-    [posSession, persistPos]
+    (tableNumber: string) => {
+      setPosSession((prev) => {
+        if (prev.tableNumber === tableNumber) return prev;
+        const next = { ...prev, tableNumber };
+        persistPos(next).then(refreshPosFromDb);
+        return next;
+      });
+    },
+    [persistPos, refreshPosFromDb]
   );
   const setCustomerName = useCallback(
-    async (customerName: string) => await persistPos({ ...posSession, customerName }),
-    [posSession, persistPos]
+    (customerName: string) => {
+      setPosSession((prev) => {
+        if (prev.customerName === customerName) return prev;
+        const next = { ...prev, customerName };
+        persistPos(next).then(refreshPosFromDb);
+        return next;
+      });
+    },
+    [persistPos, refreshPosFromDb]
   );
   const setDiscountPercent = useCallback(
     async (value: number) => await persistPos({ ...posSession, discountPercent: Math.max(0, Math.min(100, value)) }),
@@ -320,22 +349,37 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         ? new Date(order.createdAt).getTime()
         : Date.now();
       const ordersCollection = database.get<Order>('orders');
+      const queueCollection = database.get<OrderSyncQueue>('order_sync_queue');
       await database.write(async () => {
-        await ordersCollection.create((r) => {
+        const newOrder = await ordersCollection.create((r) => {
           r.created_at = createdAtMs;
           r.total = order.total;
           r.payment_method = order.paymentMethod;
           r.order_type = order.orderType;
-          r.table_number = order.tableNumber ?? null;
-          r.customer_name = order.customerName ?? null;
+          r.table_number = order.tableNumber;
+          r.customer_name = order.customerName;
           r.order_notes = order.orderNotes ?? null;
           r.status = 'PENDING';
+          r.created_by = order.userId;
+          r.company_id = order.companyId || (storeConfig.masterDataCompanyId ?? '').trim() || null;
           r.items = JSON.stringify(order.items);
+        });
+        await queueCollection.create((q) => {
+          q.order_id = newOrder.id;
         });
       });
       await refreshOrders();
+      /** Outbox changed — sync does not run on “still online”; only connectivity flips / cold-start / foreground without this. */
+      scheduleOrderSync('order_completed');
+      requestOrderUploadNow('order_completed');
       setPosSession((prev) => {
-        const next = { ...prev, cart: [] };
+        const next = {
+          ...prev,
+          cart: [],
+          orderNotes: '',
+          tableNumber: '',
+          customerName: '',
+        };
         persistPos(next).then(refreshPosFromDb);
         return next;
       });
@@ -351,11 +395,17 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       if (!order) return;
       await database.write(async () => {
         await order.update((r) => {
-          if (payload.status != null) r.status = payload.status;
+          if (payload.status != null) {
+            r.status = payload.status;
+            if (payload.status === 'PAID') r.paid_at = Date.now();
+          }
           if (payload.paymentMethod != null) r.payment_method = payload.paymentMethod;
         });
       });
+      await enqueueOrderForSync(payload.orderId);
       await refreshOrders();
+      scheduleOrderSync('order_updated');
+      requestOrderUploadNow('order_updated');
     },
     [refreshOrders]
   );
@@ -375,27 +425,30 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           r.total = newTotal;
         });
       });
+      await enqueueOrderForSync(payload.orderId);
       await refreshOrders();
+      scheduleOrderSync('order_items_changed');
+      requestOrderUploadNow('order_items_changed');
     },
     [refreshOrders]
   );
 
   const clearOrderHistory = useCallback(async () => {
     const ordersCollection = database.get<Order>('orders');
+    const queueCollection = database.get<OrderSyncQueue>('order_sync_queue');
     const all = await ordersCollection.query().fetch();
+    const qrows = await queueCollection.query().fetch();
     await database.write(async () => {
+      for (const q of qrows) await q.destroyPermanently();
       for (const o of all) await o.destroyPermanently();
     });
     await refreshOrders();
   }, [refreshOrders]);
 
-  const value: AppContextValue = {
-    auth,
-    authHydrated,
+  const value = useMemo<AppContextValue>(
+    () => ({
     posSession,
     orders,
-    login,
-    logout,
     addToCart,
     updateCartItemQty,
     setCartItemModifiers,
@@ -414,7 +467,30 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     addItemsToOrder,
     clearOrderHistory,
     refreshOrders,
-  };
+    }),
+    [
+      posSession,
+      orders,
+      addToCart,
+      updateCartItemQty,
+      setCartItemModifiers,
+      removeFromCartByIndex,
+      clearCart,
+      setOrderType,
+      setTableNumber,
+      setCustomerName,
+      setDiscountPercent,
+      setChargePercent,
+      setTaxPercent,
+      setOrderNotes,
+      setPaymentMethod,
+      addCompletedOrder,
+      updateOrderInHistory,
+      addItemsToOrder,
+      clearOrderHistory,
+      refreshOrders,
+    ]
+  );
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;
 }

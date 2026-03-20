@@ -41,7 +41,7 @@ class ImageDownloadModule(reactContext: ReactApplicationContext) :
   }
 
   @ReactMethod
-  fun downloadImages(items: ReadableArray, imagesDir: String?, promise: Promise) {
+  fun downloadImages(items: ReadableArray, imagesDir: String?, authorization: String?, promise: Promise) {
     executor.execute {
       try {
         val dir = if (!imagesDir.isNullOrBlank()) {
@@ -51,12 +51,13 @@ class ImageDownloadModule(reactContext: ReactApplicationContext) :
         } else {
           getDocumentsImageDir()
         }
+        val authHeader = authorization?.trim()?.takeIf { it.isNotEmpty() }
         val results = Arguments.createArray()
         for (i in 0 until items.size()) {
           val item = items.getMap(i) ?: continue
           val imageUrl = item.getString("imageUrl") ?: continue
           val itemId = item.getString("itemId") ?: continue
-          val localPath = downloadOne(imageUrl, itemId, dir)
+          val localPath = downloadOne(imageUrl, itemId, dir, authHeader)
           if (localPath != null) {
             val map = Arguments.createMap()
             map.putString("itemId", itemId)
@@ -77,7 +78,7 @@ class ImageDownloadModule(reactContext: ReactApplicationContext) :
     return if (match != null) ".${match.groupValues[1].lowercase()}" else ".jpg"
   }
 
-  private fun downloadOne(imageUrl: String, itemId: String, dir: File): String? {
+  private fun downloadOne(imageUrl: String, itemId: String, dir: File, authorization: String?): String? {
     var connection: HttpURLConnection? = null
     try {
       val url = URL(imageUrl)
@@ -87,8 +88,14 @@ class ImageDownloadModule(reactContext: ReactApplicationContext) :
       connection.requestMethod = "GET"
       connection.instanceFollowRedirects = true
       connection.setRequestProperty("User-Agent", "NRestoMobile/1.0")
+      if (!authorization.isNullOrBlank()) {
+        connection.setRequestProperty("Authorization", authorization)
+      }
       val code = connection.responseCode
-      if (code != HttpURLConnection.HTTP_OK) return null
+      if (code != HttpURLConnection.HTTP_OK) {
+        Log.w(TAG, "downloadOne HTTP $code for $imageUrl")
+        return null
+      }
       val ext = getExtension(imageUrl)
       val safeId = itemId.replace(Regex("[^a-zA-Z0-9_-]"), "_")
       val file = File(dir, "$safeId$ext")

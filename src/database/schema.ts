@@ -1,7 +1,7 @@
 import { appSchema, tableSchema } from '@nozbe/watermelondb';
 
 export const schema = appSchema({
-  version: 7,
+  version: 12,
   tables: [
     tableSchema({
       name: 'key_value',
@@ -31,6 +31,8 @@ export const schema = appSchema({
         { name: 'status', type: 'string', isOptional: true },
         { name: 'items', type: 'string' },
         { name: 'created_by', type: 'string', isOptional: true, isIndexed: true },
+        { name: 'company_id', type: 'string', isOptional: true, isIndexed: true },
+        { name: 'paid_at', type: 'number', isOptional: true },
       ],
     }),
     // Master data — offline-first
@@ -83,6 +85,20 @@ export const schema = appSchema({
         { name: 'phone', type: 'string', isOptional: true },
         { name: 'email', type: 'string', isOptional: true },
       ],
+    }),
+    /** Aggregate snapshot: counts for non-cancelled orders. */
+    tableSchema({
+      name: 'total_orders',
+      columns: [
+        { name: 'order_count', type: 'number' },
+        { name: 'paid_count', type: 'number' },
+        { name: 'unpaid_count', type: 'number' },
+      ],
+    }),
+    /** Outbox: order ids pending backend POST (no `sent` column on orders). */
+    tableSchema({
+      name: 'order_sync_queue',
+      columns: [{ name: 'order_id', type: 'string', isIndexed: true }],
     }),
   ],
 });

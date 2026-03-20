@@ -10,11 +10,23 @@ import {
   Modal,
   Pressable,
 } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useResponsive } from '../hooks/useResponsive';
-import Animated, { FadeIn, FadeInDown, Layout, useAnimatedStyle, useSharedValue, withRepeat, withTiming, Easing } from 'react-native-reanimated';
+import Animated, {
+  FadeIn,
+  FadeInDown,
+  Layout,
+  cancelAnimation,
+  useAnimatedStyle,
+  useSharedValue,
+  withRepeat,
+  withTiming,
+  Easing,
+} from 'react-native-reanimated';
 import Icon from 'react-native-vector-icons/Feather';
-import { useNavigation } from '@react-navigation/native';
+import { useNavigation, useFocusEffect } from '@react-navigation/native';
 import { useApp } from '../context/AppContext';
+import { useAuth } from '../hooks/useAuth';
 import { colors, spacing, radius, typography, shadows } from '../theme';
 import { EmptyState } from '../components/ui';
 import type {
@@ -29,7 +41,7 @@ import type { FoodItem } from '../constants/demoData';
 import { ORDER_TYPE_EMOJI, PAYMENT_EMOJI, FEATHER_ICONS } from '../constants/appIcons';
 import { InvoiceButton } from '../components/InvoiceButton';
 import { ReceiptPreview } from '../components/ReceiptPreview';
-import { buildInvoiceFromOrder } from '../services/printerService';
+import { buildInvoiceFromOrder, invoiceTableFieldsForOrder } from '../services/printerService';
 import { storeConfig } from '../constants/storeConfig';
 
 const PAYMENT_LABELS: Record<PaymentMethod, string> = {
@@ -226,6 +238,10 @@ function PaymentLoaderCard() {
       -1,
       true
     );
+    return () => {
+      cancelAnimation(rotation);
+      cancelAnimation(scale);
+    };
   }, [rotation, scale]);
   const ringStyle = useAnimatedStyle(() => ({
     transform: [{ rotate: `${rotation.value}deg` }],
@@ -269,7 +285,14 @@ function StatCard({
 
 export default function OrdersScreen() {
   const navigation = useNavigation();
-  const { orders: orderHistory, auth, updateOrderInHistory, addItemsToOrder, refreshOrders } = useApp();
+  const insets = useSafeAreaInsets();
+  const { auth } = useAuth();
+  const {
+    orders: orderHistory,
+    updateOrderInHistory,
+    addItemsToOrder,
+    refreshOrders,
+  } = useApp();
   const [refreshing, setRefreshing] = useState(false);
   const authUser = auth.user;
   const [dateRange, setDateRange] = useState<DateRange>('all');
@@ -291,6 +314,29 @@ export default function OrdersScreen() {
   const [showAddItemDropdown, setShowAddItemDropdown] = useState(false);
   const { horizontalPadding, maxContentWidth, isTablet } = useResponsive();
 
+  useFocusEffect(
+    useCallback(() => {
+      refreshOrders().catch(() => {});
+    }, [refreshOrders])
+  );
+
+  const editingOrderId = editingOrder?.id;
+  useEffect(() => {
+    if (editingOrderId == null) return;
+    if (!orderHistory.some((o) => o.id === editingOrderId)) {
+      setEditingOrder(null);
+    }
+  }, [orderHistory, editingOrderId]);
+
+  const orderForPaymentId = orderForPayment?.id;
+  useEffect(() => {
+    if (orderForPaymentId == null) return;
+    if (!orderHistory.some((o) => o.id === orderForPaymentId)) {
+      setOrderForPayment(null);
+      setPaymentAmount('0.00');
+    }
+  }, [orderHistory, orderForPaymentId]);
+
   const ordersByDate = useMemo(
     () => filterByDateRange(orderHistory, dateRange),
     [orderHistory, dateRange]
@@ -308,9 +354,10 @@ export default function OrdersScreen() {
 
   const invoicePayload = useMemo(() => {
     if (!invoiceOrder) return null;
-    const tableNum = invoiceOrder.tableNumber != null && invoiceOrder.tableNumber !== ''
-      ? parseInt(invoiceOrder.tableNumber, 10)
-      : null;
+    const { tableNumber, tableDisplay } = invoiceTableFieldsForOrder({
+      orderType: invoiceOrder.orderType,
+      tableNumber: invoiceOrder.tableNumber,
+    });
     return buildInvoiceFromOrder({
       orderId: invoiceOrder.id,
       createdAt: invoiceOrder.createdAt,
@@ -320,7 +367,8 @@ export default function OrdersScreen() {
       storeWebsite: storeConfig.storeWebsite,
       binTax: storeConfig.binTax,
       servedBy: authUser?.name ?? 'Admin',
-      tableNumber: tableNum != null && !Number.isNaN(tableNum) ? tableNum : null,
+      tableNumber,
+      tableDisplay,
       orderTypeLabel: ORDER_TYPE_LABELS[invoiceOrder.orderType],
       items: invoiceOrder.items.map((i) => ({ name: i.name, price: i.price, qty: i.qty })),
       total: invoiceOrder.total,
@@ -354,6 +402,7 @@ export default function OrdersScreen() {
     });
   }, [filteredOrders]);
 
+  /** Same pipeline as the list (date range, exclude cancelled) — do not use `total_orders` snapshot here; observe can lag or deserialize wrong while `orders` is correct. */
   const stats = useMemo(() => {
     const total = ordersExcludingCancelled.length;
     const unpaid = ordersExcludingCancelled.filter((o) => (o.status ?? 'PENDING') !== 'PAID').length;
@@ -375,9 +424,13 @@ export default function OrdersScreen() {
     setInvoicePaymentMethod(order.paymentMethod);
   }, []);
 
-  const saveEdit = () => {
+  const saveEdit = async () => {
     if (!editingOrder) return;
-    updateOrderInHistory({ orderId: editingOrder.id, status: editStatus, paymentMethod: editPayment });
+    await updateOrderInHistory({
+      orderId: editingOrder.id,
+      status: editStatus,
+      paymentMethod: editPayment,
+    });
     setEditingOrder(null);
   };
 
@@ -401,6 +454,16 @@ export default function OrdersScreen() {
     setUpdateOrderCart([]);
     setShowAddItemDropdown(false);
   };
+
+  const orderToUpdateId = orderToUpdate?.id;
+  useEffect(() => {
+    if (orderToUpdateId == null) return;
+    if (!orderHistory.some((o) => o.id === orderToUpdateId)) {
+      setOrderToUpdate(null);
+      setUpdateOrderCart([]);
+      setShowAddItemDropdown(false);
+    }
+  }, [orderHistory, orderToUpdateId]);
 
   const addToUpdateCart = (food: FoodItem, qty: number = 1) => {
     setUpdateOrderCart((prev) => {
@@ -478,7 +541,6 @@ export default function OrdersScreen() {
     setOrderForPayment(null);
     setPaymentAmount('0.00');
     setShowPaymentLoader(true);
-    // One frame of loader, then invoice opens instantly (same modal, single state update)
 
     requestAnimationFrame(() => {
       setTimeout(() => {
@@ -486,10 +548,13 @@ export default function OrdersScreen() {
           orderId: order.id,
           status: 'PAID',
           paymentMethod: method,
-        });
-        setInvoiceOrder(order);
-        setInvoicePaymentMethod(method);
-        setShowPaymentLoader(false);
+        })
+          .catch(() => {})
+          .finally(() => {
+            setInvoiceOrder({ ...order, status: 'PAID', paymentMethod: method });
+            setInvoicePaymentMethod(method);
+            setShowPaymentLoader(false);
+          });
       }, 0);
     });
   };
@@ -521,7 +586,7 @@ export default function OrdersScreen() {
           </Text>
         </Animated.View>
 
-        {/* Stats — staff-focused: orders, unpaid, paid */}
+        {/* Stats from in-memory orders (date range, excl. cancelled) — matches list source */}
         <Animated.View entering={FadeIn.delay(50).duration(300)} style={styles.statsRow}>
           <StatCard label="Orders" value={stats.total} icon="clipboard" />
           <StatCard label="Unpaid" value={stats.unpaid} icon="clock" />
@@ -981,7 +1046,12 @@ export default function OrdersScreen() {
                 </View>
               ) : invoiceOrder !== null ? (
                 <View style={styles.invoiceContainer}>
-                  <View style={styles.invoiceHeader}>
+                  <View
+                    style={[
+                      styles.invoiceHeader,
+                      { paddingTop: Math.max(insets.top, spacing.sm) + spacing.xs },
+                    ]}
+                  >
                     <Text style={styles.invoiceTitle}>Invoice</Text>
                     <View style={styles.invoiceHeaderActions}>
                       {invoicePayload && (

@@ -16,6 +16,8 @@ import FoodItem from './FoodItem';
 import FoodModifier from './FoodModifier';
 import AvailableTable from './AvailableTable';
 import Customer from './Customer';
+import TotalOrder from './TotalOrder';
+import OrderSyncQueue from './OrderSyncQueue';
 
 const adapter = new SQLiteAdapter({
   schema,
@@ -38,5 +40,7 @@ export const database = new Database({
     FoodModifier,
     AvailableTable,
     Customer,
+    TotalOrder,
+    OrderSyncQueue,
   ],
 });

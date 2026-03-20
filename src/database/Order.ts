@@ -36,8 +36,14 @@ export default class Order extends Model {
   @field('status')
   status!: string | null;
 
+  @field('paid_at')
+  paid_at!: number | null;
+
   @field('created_by')
   created_by!: string | null;
+
+  @field('company_id')
+  company_id!: string | null;
 
   @text('items')
   items!: string;

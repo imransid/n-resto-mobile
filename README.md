@@ -50,6 +50,8 @@ Use the theme for most UI; use `useResponsive()` for layout (columns, padding, s
 
 3. **Android**: Vector icons are applied via `apply from: .../fonts.gradle` in `android/app/build.gradle`. No extra step.
 
+4. **Environment:** copy `.env.example` to **`.env`** (gitignored). Set **`ORDERS_SYNC_URL`** for order sync (e.g. `http://localhost:4899/orders/sync` on iOS sim, `http://10.0.2.2:4899/orders/sync` on Android emulator). Optional: `GRAPHQL_API_BASE`, `GRAPHQL_AUTHORIZATION`, `ORDERS_SYNC_AUTHORIZATION`, etc. **Restart Metro** after editing `.env` (use `npm start -- --reset-cache` if `@env` misbehaves). Metro maps `@env` → `src/env/index.js` (stub); Babel still inlines real values from `.env`. New keys: add to Babel **allowlist** in `babel.config.js`, **`src/types/env.d.ts`**, and **`src/env/index.js`**.
+
 ## Run
 
 - **Metro**:
@@ -112,27 +114,59 @@ yarn android:release
 
 Auth is centralized so one place owns state, persistence, and API.
 
-- **State:** `AuthState` (`user`, `accessToken`, `isAuthenticated`) lives in **AppContext** and is the single source of truth for the UI.
+- **State:** `AuthState` lives in **`AuthContext`** so Login / tab chrome do **not** re-render when the POS cart or orders change.
 - **Persistence:** **authService** (`src/services/authService.ts`) is the only place that reads/writes auth. It uses WatermelonDB KeyValue under the key `auth`. Login and logout go through `setStoredAuth` / `clearStoredAuth`.
-- **Flow:** On load, AppContext subscribes to the `key_value` table for `auth`; when the stored value changes, `parseAuth` turns it into `AuthState` and context updates. LoginScreen calls `login(user, accessToken)` → authService persists → subscription fires → navigator shows Main. Logout calls `logout()` → authService clears → subscription fires → navigator shows Login.
-- **Usage:** Use `useApp()` for full context or `useAuth()` when you only need `{ user, accessToken, isAuthenticated, login, logout }` (e.g. LoginScreen, LogoutButton, RootNavigator).
+- **Flow:** On load, **AuthProvider** subscribes to `key_value` for `auth`; when the stored value changes, `parseAuth` updates state. LoginScreen calls `login(user, accessToken)` → authService persists → subscription fires → navigator shows Main.
+- **Usage:** **`useAuth()`** → `{ auth, authHydrated, login, logout }` for screens that only need auth. **`useApp()`** → POS session, cart actions, and orders (heavier; updates often).
 
 **Files**
 
 - `src/types/auth.ts` – `AuthState`, `StoredAuthPayload`, `INITIAL_AUTH`.
 - `src/services/authService.ts` – `getStoredAuth()`, `setStoredAuth()`, `clearStoredAuth()`, `parseAuth()`.
-- `src/context/AppContext.tsx` – holds auth state, subscribes to DB, exposes `login` / `logout` that delegate to authService.
-- `src/hooks/useAuth.ts` – thin hook that returns auth + login + logout from context.
+- `src/context/AuthContext.tsx` – auth state + DB subscription + `login` / `logout`.
+- `src/context/AppContext.tsx` – POS session + orders (no auth).
+- `src/hooks/useAuth.ts` – re-exports `useAuthContext()` as `useAuth()`.
+
+### Performance (app-wide)
+
+- **Split contexts:** `AuthProvider` wraps `AppProvider` in `App.tsx` — cart/orders updates no longer invalidate Login or tab headers.
+- **`useMemo` on `AppContext` value** — stable reference when POS/orders data are unchanged.
+- **Master data observers** — debounced (~100 ms) so bulk DB writes coalesce to one React state update.
+- **Orders aggregate** — `total_orders` sync debounced (~320 ms) after order list changes.
+- **No duplicate `refreshOrders()`** after writes — Watermelon `orders` observer is the source of truth.
+- **POS menu `FlatList`** — tuned `maxToRenderPerBatch`, `updateCellsBatchingPeriod`; food grid enter animations capped for long menus; Android image `fadeDuration={0}`.
+- **Bottom tabs `lazy: true`** — Orders screen is not mounted until opened.
+
+### Orders list & POS checkout (UX)
+
+- **Orders tab** calls **`refreshOrders()` on focus** so SQLite changes (sync, edits, new orders) show immediately without pull-to-refresh.
+- After **writes** (`addCompletedOrder`, `updateOrderInHistory`, `addItemsToOrder`, `clearOrderHistory`), context **refetches orders** so React state matches the DB even if the Watermelon observer is delayed.
+- **Confirm order** stays on **POS**; cart, notes, table, and customer fields reset for the next sale (no auto-navigate to Orders).
+- **Payment → invoice** uses an order object with **PAID** + payment method applied so the receipt matches the DB update.
+
+If the app **closes after a few minutes** with no red screen, capture **native** logs: Android `adb logcat *:E` / Xcode **Devices → View Device Logs** — JS errors often appear as `ReactNativeJS` or `FATAL EXCEPTION`.
+
+**Android `ForegroundServiceDidNotStartInTimeException` (OrderSyncHeadlessService):** fixed by calling `startForeground()` immediately in `OrderSyncHeadlessService` when WorkManager starts the service — RN headless init (especially without Metro) was too slow. Rebuild the native app after pulling that change.
 
 **Production**
 
 - Store **accessToken** (and refreshToken if any) in **react-native-keychain** instead of KeyValue; keep `user` in KeyValue or in Keychain. Implement `getStoredAuth` / `setStoredAuth` / `clearStoredAuth` to read/write Keychain + KeyValue so the rest of the app stays unchanged.
 - For real API login: add `loginWithCredentials(email, password)` in authService that calls your API, then `setStoredAuth({ user, accessToken, isAuthenticated: true })`. Optionally add token refresh and an API client that attaches the token and retries on 401 with refresh.
 
+## Background order sync (native + JS)
+
+**Full guide (business + developer, API contract, how to change):** [`docs/ORDER_SYNC_AND_OUTBOX.md`](docs/ORDER_SYNC_AND_OUTBOX.md)
+
+Quick facts:
+
+- Enable with **`ORDERS_SYNC_URL`** in `.env` (→ `storeConfig.ordersSyncUrl`); empty = **no** WorkManager, **no** connectivity monitor, **no** AppState listener (minimal cost).
+- **Android:** WorkManager (~15 min) + Headless JS; **iOS:** foreground / AppState / path monitor (no periodic upload after force-quit without extra setup).
+- **POST** batch → **delete local rows only on HTTP 2xx**; server should dedupe by `localId`.
+
 ## Project structure
 
 - `src/constants/demoData.ts` – Demo users, food items, categories, service charge constant.
-- `src/context/AppContext.tsx` – Auth, POS session, orders; persists via WatermelonDB KeyValue and authService.
+- `src/context/AuthContext.tsx` – Auth; `AppContext.tsx` – POS session + orders.
 - `src/services/authService.ts` – Auth persistence (get/set/clear); single place for auth storage.
 - `src/navigation/` – Root navigator (Login stack vs Main tabs), Main tabs (POS, Orders), Logout button.
 - `src/screens/LoginScreen.tsx` – Email/password, Reanimated entrance.
@@ -182,6 +216,14 @@ The app includes a **native thermal printer bridge** (ESC/POS) for 58mm/80mm rec
 - `src/constants/exampleInvoice.ts` – Example payload for testing.
 - **Android**: `ThermalPrinterModule.kt` (ESC/POS + Bluetooth SPP), `ThermalPrinterPackage.kt`; registered in `MainApplication.kt`.
 - **iOS**: `ThermalPrinterModule.m` (ESC/POS + TCP socket); added to the Xcode target.
+
+## Food Service GraphQL (`getMasterData`)
+
+- Set **`graphqlApiBase`** in `src/constants/storeConfig.ts` to the Food Service URL (e.g. `http://localhost:3399/graphql`). On Android emulator, `localhost` is rewritten to `10.0.2.2` automatically for that host.
+- Optional: **`masterDataCompanyId`** — passed when recording a MasterData sync row (with `deviceId` + `userId`).
+- Optional: **`graphqlAuthorization`** — e.g. `Bearer <token>` if your gateway requires it.
+- The app query matches the Food Service schema: `ingredients`, `foodGroups`, `foodItems` (with `item_image` only), `foodModifiers`, **`customerList`**. Customers from `customerList` are stored in WatermelonDB and used in the POS dropdown when **`customersApiBase`** is not set.
+- **Images:** relative paths like `/uploads/...` are resolved with **`assetsBaseUrl`** or the GraphQL origin (without `/graphql`).
 
 ## Debugging: Database and image download
 

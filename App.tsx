@@ -3,9 +3,10 @@
  * React Native POS: Login + Point of Sale (WatermelonDB, no Redux)
  */
 
-import React, { useState, useCallback, useMemo } from 'react';
+import React, { useState, useCallback, useMemo, useEffect } from 'react';
 import { View, StatusBar } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
+import { AuthProvider } from './src/context/AuthContext';
 import { AppProvider } from './src/context/AppContext';
 import RootNavigator from './src/navigation/RootNavigator';
 import { SplashScreen } from './src/components/SplashScreen';
@@ -16,6 +17,8 @@ import {
 import { getPersistedSlice } from './src/database';
 import { seedMasterDataIfEmpty, hasMasterData } from './src/database';
 import { storeConfig } from './src/constants/storeConfig';
+import { startOrderBackgroundSync } from './src/services/orderBackgroundSyncService';
+import { startPaidOrdersCleanup } from './src/services/paidOrdersCleanupService';
 
 /** Defer until after initial paint (replacement for deprecated InteractionManager.runAfterInteractions). */
 function afterInitialFrame(): Promise<void> {
@@ -42,6 +45,7 @@ async function loadMasterDataWithFallback(): Promise<void> {
       deviceId,
       userId,
       description: 'Master data sync',
+      companyId: storeConfig.masterDataCompanyId?.trim() || undefined,
     });
   } catch (e) {
     if (__DEV__) console.warn('[NResto] loadMasterDataOnInit failed', e);
@@ -67,6 +71,16 @@ async function loadMasterDataWithFallback(): Promise<void> {
 export default function App() {
   const [showApp, setShowApp] = useState(false);
   const onSplashFinish = useCallback(() => setShowApp(true), []);
+
+  /** Register sync + WorkManager + paid-order cleanup as soon as JS loads. */
+  useEffect(() => {
+    const unsubSync = startOrderBackgroundSync();
+    const unsubCleanup = startPaidOrdersCleanup();
+    return () => {
+      unsubSync();
+      unsubCleanup();
+    };
+  }, []);
 
   const masterDataPromise = useMemo(() => {
     if (storeConfig.graphqlApiBase?.trim()) {
@@ -97,11 +111,13 @@ export default function App() {
       {!showApp ? (
         <SplashScreen onFinish={onSplashFinish} masterDataPromise={masterDataPromise} />
       ) : (
-        <AppProvider>
-          <SafeAreaProvider>
-            <RootNavigator />
-          </SafeAreaProvider>
-        </AppProvider>
+        <AuthProvider>
+          <AppProvider>
+            <SafeAreaProvider>
+              <RootNavigator />
+            </SafeAreaProvider>
+          </AppProvider>
+        </AuthProvider>
       )}
     </View>
   );

@@ -28,8 +28,8 @@ import Animated, {
 } from 'react-native-reanimated';
 import Icon from 'react-native-vector-icons/Feather';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { useNavigation } from '@react-navigation/native';
 import { useApp } from '../../context/AppContext';
+import { useAuth } from '../../hooks/useAuth';
 import {
   getSubtotal,
   getTotal,
@@ -44,16 +44,11 @@ import {
 import { useMasterData } from '../../hooks/useMasterData';
 import { storeConfig } from '../../constants/storeConfig';
 import { getTables, type TableItem } from '../../services/tablesService';
-import { getCustomers, type CustomerItem } from '../../services/customersService';
+import { getCustomersForPos, type CustomerItem } from '../../services/customersService';
 import type { FoodItem } from '../../constants/demoData';
 import { colors as themeColors, spacing, radius, typography, shadows } from '../../theme';
 import { Badge, EmptyState, PressableScale } from '../../components/ui';
-import {
-  CATEGORY_EMOJI,
-  getFoodEmoji,
-  ORDER_TYPE_EMOJI,
-  FEATHER_ICONS,
-} from '../../constants/appIcons';
+import { CATEGORY_EMOJI, ORDER_TYPE_EMOJI, FEATHER_ICONS } from '../../constants/appIcons';
 
 const ORDER_TYPES: { id: OrderType; label: string }[] = [
   { id: 'DINE_IN', label: 'Dine In' },
@@ -68,6 +63,15 @@ const shadowAccent = shadows.accent(ACCENT);
 
 const FOOD_LIST_INITIAL_NUM = 12;
 const FOOD_LIST_WINDOW_SIZE = 8;
+const FOOD_LIST_MAX_BATCH = 8;
+/** Cap stagger so long menus don’t queue hundreds of delayed layout animations. */
+const FOOD_CARD_ENTER_STAGGER_CAP = 14;
+
+function coercePrice(value: unknown, fallback = 0): number {
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  const n = Number(value);
+  return Number.isFinite(n) ? n : fallback;
+}
 
 function firstWord(name: string): string {
   const word = name.trim().split(/\s+/)[0];
@@ -93,7 +97,10 @@ const FoodCard = React.memo(function FoodCard({
 
   return (
     <Animated.View
-      entering={FadeInDown.delay(index * 35).duration(280).springify().damping(18)}
+      entering={FadeInDown.delay(Math.min(index, FOOD_CARD_ENTER_STAGGER_CAP) * 28)
+        .duration(260)
+        .springify()
+        .damping(18)}
       style={styles.foodCardOuter}
     >
       <PressableScale activeScale={0.97} style={styles.foodCard} onPress={() => onAdd(food)}>
@@ -103,6 +110,7 @@ const FoodCard = React.memo(function FoodCard({
               source={{ uri: imageUri! }}
               style={StyleSheet.absoluteFill}
               resizeMode="cover"
+              fadeDuration={Platform.OS === 'android' ? 0 : undefined}
               onError={() => setImageError(true)}
             />
           ) : null}
@@ -126,6 +134,7 @@ const FoodCard = React.memo(function FoodCard({
 });
 
 export default function POSScreen() {
+  const { auth } = useAuth();
   const {
     posSession,
     addToCart,
@@ -150,7 +159,6 @@ export default function POSScreen() {
     chargePercent,
     taxPercent,
   } = posSession;
-  const navigation = useNavigation();
   const insets = useSafeAreaInsets();
   const { height: screenHeight } = useWindowDimensions();
   const { numColumns, cartSheetHeightRatio, horizontalPadding, maxContentWidth, isTablet } = useResponsive();
@@ -160,11 +168,16 @@ export default function POSScreen() {
   const [showPlaceOrder, setShowPlaceOrder] = useState(false);
   const [showOrderPlacedToast, setShowOrderPlacedToast] = useState(false);
   const [showCartSheet, setShowCartSheet] = useState(false);
+  /** Local draft — avoids `persistPos` on every keystroke (fixes lag / focus loss on notes). */
+  const [notesDraft, setNotesDraft] = useState('');
+  const prevCartSheetOpen = useRef(false);
   const [modifiersCartIndex, setModifiersCartIndex] = useState<number | null>(null);
   const [tables, setTables] = useState<TableItem[]>([]);
+  const [selectedTable, setSelectedTable] = useState<TableItem | null>(null);
   const [tableDropdownOpen, setTableDropdownOpen] = useState(false);
   const [tablesLoading, setTablesLoading] = useState(false);
   const [customers, setCustomers] = useState<CustomerItem[]>([]);
+  const [selectedCustomer, setSelectedCustomer] = useState<CustomerItem | null>(null);
   const [customerDropdownOpen, setCustomerDropdownOpen] = useState(false);
   const [customersLoading, setCustomersLoading] = useState(false);
   const listRef = useRef<FlatList<FoodItem> | null>(null);
@@ -175,19 +188,69 @@ export default function POSScreen() {
       getTables(storeConfig.tablesApiBase)
         .then(setTables)
         .finally(() => setTablesLoading(false));
+    } else {
+      setSelectedTable(null);
     }
   }, [orderType]);
 
   useEffect(() => {
+    if (!tableNumber) {
+      setSelectedTable(null);
+      return;
+    }
+    const matched = tables.find((t) => t.number === tableNumber) ?? null;
+    setSelectedTable(matched);
+  }, [tables, tableNumber]);
+
+  useEffect(() => {
     setCustomersLoading(true);
-    getCustomers(storeConfig.customersApiBase)
+    getCustomersForPos(storeConfig.customersApiBase)
       .then(setCustomers)
       .finally(() => setCustomersLoading(false));
   }, []);
 
+  useEffect(() => {
+    if (!customerName) {
+      setSelectedCustomer(null);
+      return;
+    }
+    const matched = customers.find((c) => c.name === customerName) ?? null;
+    setSelectedCustomer(matched);
+  }, [customers, customerName]);
+
+  /** Use current menu/modifier prices so totals update in real time and survive bad persisted cart prices. */
+  const cartPriced = useMemo(() => {
+    return cart.map((c) => {
+      const liveFood = items.find((i) => i.id === c.food.id);
+      const food = liveFood
+        ? {
+            ...c.food,
+            ...liveFood,
+            item_image_local: c.food.item_image_local ?? liveFood.item_image_local ?? null,
+            price: coercePrice(liveFood.price, coercePrice(c.food.price, 0)),
+          }
+        : { ...c.food, price: coercePrice(c.food.price, 0) };
+
+      const mods = (c.modifiers ?? []).map((m) => {
+        const live = modifiers.find((x) => x.id === m.id);
+        return {
+          ...m,
+          price:
+            live != null
+              ? coercePrice(live.price, coercePrice(m.price, 0))
+              : coercePrice(m.price, 0),
+        };
+      });
+      return { ...c, food, modifiers: mods.length ? mods : undefined };
+    });
+  }, [cart, items, modifiers]);
+
   const lineTotal = useCallback((c: CartItem) => {
-    const base = c.food.price * c.qty;
-    const modTotal = (c.modifiers ?? []).reduce((s, m) => s + m.price * c.qty, 0);
+    const base = coercePrice(c.food.price, 0) * c.qty;
+    const modTotal = (c.modifiers ?? []).reduce(
+      (s, m) => s + coercePrice(m.price, 0) * c.qty,
+      0
+    );
     return base + modTotal;
   }, []);
 
@@ -210,7 +273,15 @@ export default function POSScreen() {
     }
   }, [showCartSheet, sheetOpen]);
 
-  const closeCartSheet = () => {
+  useEffect(() => {
+    if (showCartSheet && !prevCartSheetOpen.current) {
+      setNotesDraft(orderNotes ?? '');
+    }
+    prevCartSheetOpen.current = showCartSheet;
+  }, [showCartSheet, orderNotes]);
+
+  const closeCartSheet = useCallback(() => {
+    void setOrderNotes(notesDraft);
     sheetOpen.value = withSpring(
       0,
       {
@@ -222,7 +293,7 @@ export default function POSScreen() {
         if (finished) runOnJS(setShowCartSheet)(false);
       }
     );
-  };
+  }, [notesDraft, setOrderNotes, sheetOpen]);
 
   const backdropStyle = useAnimatedStyle(() => ({
     opacity: interpolate(sheetOpen.value, [0, 1], [0, 0.6]),
@@ -263,8 +334,10 @@ export default function POSScreen() {
     return list.filter((f) => f.status);
   }, [category, categoryLabel, items, search]);
 
-  const subtotal = getSubtotal(cart);
-  const total = getTotal(cart, discountPercent, chargePercent, taxPercent);
+  const subtotal = getSubtotal(cartPriced);
+  const total = getTotal(cartPriced, discountPercent, chargePercent, taxPercent);
+  const selectedTableLabel = selectedTable ? `Table ${selectedTable.name ?? selectedTable.number}` : (tableNumber ? `Table ${tableNumber}` : '');
+  const selectedCustomerLabel = selectedCustomer ? `${selectedCustomer.name}${selectedCustomer.phone ? ` · ${selectedCustomer.phone}` : ''}` : customerName;
 
   const handleAddItem = useCallback(
     (food: FoodItem) => {
@@ -282,13 +355,25 @@ export default function POSScreen() {
   };
 
   const handleConfirmAndPay = () => {
+    const needsTable = orderType === 'DINE_IN';
+    const hasTable = !!(tableNumber?.trim());
+    const hasCustomer = !!(customerName?.trim());
+    if (needsTable && !hasTable) {
+      Alert.alert('Required field', 'Please select a table before saving the order.');
+      return;
+    }
+    if (!hasCustomer) {
+      Alert.alert('Required field', 'Please select a customer before saving the order.');
+      return;
+    }
     const enabled: PaymentMethod[] = storeConfig.enabledPaymentMethods ?? ['CASH'];
     const allowedMethod: PaymentMethod = enabled.length > 0 && enabled.includes(paymentMethod) ? paymentMethod : (enabled[0] ?? 'CASH');
-    const modSum = (c: CartItem) => (c.modifiers ?? []).reduce((s, m) => s + m.price, 0);
-    const items = cart.map((c) => ({
+    const modSum = (c: CartItem) =>
+      (c.modifiers ?? []).reduce((s, m) => s + coercePrice(m.price, 0), 0);
+    const orderLineItems = cartPriced.map((c) => ({
       id: c.food.id,
       name: c.food.item_name,
-      price: c.food.price + modSum(c),
+      price: coercePrice(c.food.price, 0) + modSum(c),
       qty: c.qty,
     }));
     const orderId = generateOrderId();
@@ -296,19 +381,21 @@ export default function POSScreen() {
     const order: CompletedOrder = {
       id: orderId,
       createdAt,
-      items,
+      items: orderLineItems,
       total,
       paymentMethod: allowedMethod,
       orderType,
-      tableNumber: tableNumber || undefined,
-      customerName: customerName || undefined,
-      orderNotes: orderNotes?.trim() || undefined,
+      tableNumber: tableNumber || '',
+      customerName: customerName || '',
+      userId: auth.user?.id ?? '',
+      companyId: (storeConfig.masterDataCompanyId ?? '').trim(),
+      orderNotes: notesDraft.trim() || undefined,
       status: 'PENDING',
     };
     addCompletedOrder(order);
+    setNotesDraft('');
     setShowPlaceOrder(false);
     setShowOrderPlacedToast(true);
-    setTimeout(() => navigation.navigate('Orders' as never), 2500);
   };
 
   const renderFoodItem = useCallback(
@@ -491,7 +578,7 @@ export default function POSScreen() {
             activeOpacity={0.7}
           >
             <Text style={tableNumber ? styles.tableDropdownText : styles.tableDropdownPlaceholder} numberOfLines={1}>
-              {tablesLoading ? 'Loading...' : tableNumber || 'Select table'}
+              {tablesLoading ? 'Loading...' : selectedTableLabel || 'Select table'}
             </Text>
             <Icon name="chevron-down" size={20} color={themeColors.textMuted} />
           </TouchableOpacity>
@@ -501,8 +588,9 @@ export default function POSScreen() {
             animationType="fade"
             onRequestClose={() => setTableDropdownOpen(false)}
           >
-            <Pressable style={styles.tableModalBackdrop} onPress={() => setTableDropdownOpen(false)}>
-              <View style={styles.tableModalContent}>
+            <View style={styles.tableModalBackdrop}>
+              <Pressable style={StyleSheet.absoluteFill} onPress={() => setTableDropdownOpen(false)} />
+              <View style={styles.tableModalContent} pointerEvents="box-none">
                 <View style={styles.tableModalHeader}>
                   <Text style={styles.tableModalTitle}>Select table</Text>
                   <TouchableOpacity onPress={() => setTableDropdownOpen(false)} hitSlop={12}>
@@ -525,6 +613,7 @@ export default function POSScreen() {
                       style={[styles.tableOption, tableNumber === t.number && styles.tableOptionActive]}
                       onPress={() => {
                         setTableNumber(t.number);
+                        setSelectedTable(t);
                         setTableDropdownOpen(false);
                       }}
                     >
@@ -535,7 +624,7 @@ export default function POSScreen() {
                   ))}
                 </ScrollView>
               </View>
-            </Pressable>
+            </View>
           </Modal>
         </Animated.View>
       )}
@@ -548,7 +637,7 @@ export default function POSScreen() {
           activeOpacity={0.7}
         >
           <Text style={customerName ? styles.tableDropdownText : styles.tableDropdownPlaceholder} numberOfLines={1}>
-            {customersLoading ? 'Loading...' : customerName || 'Select customer'}
+            {customersLoading ? 'Loading...' : selectedCustomerLabel || 'Select customer'}
           </Text>
           <Icon name="chevron-down" size={20} color={themeColors.textMuted} />
         </TouchableOpacity>
@@ -558,8 +647,9 @@ export default function POSScreen() {
           animationType="fade"
           onRequestClose={() => setCustomerDropdownOpen(false)}
         >
-          <Pressable style={styles.tableModalBackdrop} onPress={() => setCustomerDropdownOpen(false)}>
-            <View style={styles.tableModalContent}>
+          <View style={styles.tableModalBackdrop}>
+            <Pressable style={StyleSheet.absoluteFill} onPress={() => setCustomerDropdownOpen(false)} />
+            <View style={styles.tableModalContent} pointerEvents="box-none">
               <View style={styles.tableModalHeader}>
                 <Text style={styles.tableModalTitle}>Select customer</Text>
                 <TouchableOpacity onPress={() => setCustomerDropdownOpen(false)} hitSlop={12}>
@@ -571,6 +661,7 @@ export default function POSScreen() {
                   style={[styles.tableOption, !customerName && styles.tableOptionActive]}
                   onPress={() => {
                     setCustomerName('');
+                    setSelectedCustomer(null);
                     setCustomerDropdownOpen(false);
                   }}
                 >
@@ -582,6 +673,7 @@ export default function POSScreen() {
                     style={[styles.tableOption, customerName === c.name && styles.tableOptionActive]}
                     onPress={() => {
                       setCustomerName(c.name);
+                      setSelectedCustomer(c);
                       setCustomerDropdownOpen(false);
                     }}
                   >
@@ -592,7 +684,7 @@ export default function POSScreen() {
                 ))}
               </ScrollView>
             </View>
-          </Pressable>
+          </View>
         </Modal>
       </Animated.View>
 
@@ -613,7 +705,9 @@ export default function POSScreen() {
           key={numColumns}
           numColumns={numColumns}
           initialNumToRender={FOOD_LIST_INITIAL_NUM}
+          maxToRenderPerBatch={FOOD_LIST_MAX_BATCH}
           windowSize={FOOD_LIST_WINDOW_SIZE}
+          updateCellsBatchingPeriod={50}
           contentContainerStyle={[styles.mainContent, { paddingHorizontal: horizontalPadding }]}
           columnWrapperStyle={numColumns > 1 ? styles.foodGridRow : undefined}
           style={styles.main}
@@ -683,17 +777,17 @@ export default function POSScreen() {
                 style={styles.cartSheetScroll}
                 contentContainerStyle={styles.cartSheetScrollContent}
                 showsVerticalScrollIndicator={false}
-                keyboardShouldPersistTaps="handled"
+                keyboardShouldPersistTaps="always"
               >
-                {cart.map((item, index) => renderCartItem(item, index))}
+                {cartPriced.map((item, index) => renderCartItem(item, index))}
                 <View style={styles.notesWrap}>
                   <Icon name="message-circle" size={18} color={themeColors.textSubtle} />
                   <TextInput
                     style={styles.notesInput}
                     placeholder="Order notes (optional)"
                     placeholderTextColor={themeColors.textSubtle}
-                    value={orderNotes}
-                    onChangeText={(t) => setOrderNotes(t)}
+                    value={notesDraft}
+                    onChangeText={setNotesDraft}
                     multiline
                   />
                 </View>
@@ -754,7 +848,19 @@ export default function POSScreen() {
             </View>
             <ScrollView style={styles.placeOrderScroll} showsVerticalScrollIndicator={false}>
               <Text style={styles.placeOrderSectionLabel}>Order summary</Text>
-              {cart.map((c, i) => (
+              {orderType === 'DINE_IN' && !!selectedTableLabel && (
+                <View style={styles.placeOrderItemRow}>
+                  <Text style={styles.placeOrderItemName}>Selected table</Text>
+                  <Text style={styles.placeOrderItemTotal}>{selectedTableLabel}</Text>
+                </View>
+              )}
+              {!!selectedCustomerLabel && (
+                <View style={styles.placeOrderItemRow}>
+                  <Text style={styles.placeOrderItemName}>Selected customer</Text>
+                  <Text style={styles.placeOrderItemTotal}>{selectedCustomerLabel}</Text>
+                </View>
+              )}
+              {cartPriced.map((c, i) => (
                 <View key={`${c.food.id}-${i}`} style={styles.placeOrderItemRow}>
                   <Text style={styles.placeOrderItemName}>
                     {c.qty}× {c.food.item_name}
@@ -804,7 +910,9 @@ export default function POSScreen() {
               <View>
                 <Text style={styles.modifiersModalTitle}>Modifiers</Text>
                 <Text style={styles.modifiersModalSubtitle}>
-                  {modifiersCartIndex !== null && cart[modifiersCartIndex] ? cart[modifiersCartIndex].food.item_name : ''}
+                  {modifiersCartIndex !== null && cartPriced[modifiersCartIndex]
+                    ? cartPriced[modifiersCartIndex].food.item_name
+                    : ''}
                 </Text>
               </View>
               <TouchableOpacity onPress={() => setModifiersCartIndex(null)} hitSlop={12} style={styles.modifiersModalClose}>
@@ -813,7 +921,7 @@ export default function POSScreen() {
             </View>
             <ScrollView style={styles.modifiersModalScroll} showsVerticalScrollIndicator={false}>
               {modifiersCartIndex !== null && cart[modifiersCartIndex] && (() => {
-                const cartItem = cart[modifiersCartIndex];
+                const cartItem = cartPriced[modifiersCartIndex];
                 const currentMods = cartItem.modifiers ?? [];
                 const addMod = (m: Modifier) => {
                   setCartItemModifiers({ index: modifiersCartIndex, modifiers: [...currentMods, m] });

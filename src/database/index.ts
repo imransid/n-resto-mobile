@@ -58,4 +58,6 @@ export { default as FoodItem } from './FoodItem';
 export { default as FoodModifier } from './FoodModifier';
 export { default as AvailableTable } from './AvailableTable';
 export { default as Customer } from './Customer';
+export { default as TotalOrder } from './TotalOrder';
+export { syncTotalOrderAggregateFromOrders } from './syncTotalOrderAggregate';
 export { seedMasterDataIfEmpty, hasMasterData } from './seedMasterData';

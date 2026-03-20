@@ -35,21 +35,27 @@ async function loadFromDb(): Promise<MasterData> {
     ...categories.map((c) => ({ id: c.id, label: c.name })),
   ];
 
-  const itemList: FoodItem[] = items.map((item) => ({
-    id: item.id,
-    item_name: item.item_name,
-    description: item.description,
-    price: item.price,
-    status: item.status,
-    category: categoryIdToName.get(item.category_id) ?? '',
-    item_image_local: item.item_image_local ?? null,
-  }));
+  const itemList: FoodItem[] = items.map((item) => {
+    const raw = item.price as unknown;
+    const price =
+      typeof raw === 'number' && Number.isFinite(raw) ? raw : Number(raw) || 0;
+    return {
+      id: item.id,
+      item_name: item.item_name,
+      description: item.description,
+      price,
+      status: item.status,
+      category: categoryIdToName.get(item.category_id) ?? '',
+      item_image_local: item.item_image_local ?? null,
+    };
+  });
 
-  const modifierList: Modifier[] = modifiers.map((m) => ({
-    id: m.id,
-    name: m.name,
-    price: m.price,
-  }));
+  const modifierList: Modifier[] = modifiers.map((m) => {
+    const raw = m.price as unknown;
+    const price =
+      typeof raw === 'number' && Number.isFinite(raw) ? raw : Number(raw) || 0;
+    return { id: m.id, name: m.name, price };
+  });
 
   return {
     categories: categoryList,
@@ -57,6 +63,9 @@ async function loadFromDb(): Promise<MasterData> {
     modifiers: modifierList,
   };
 }
+
+/** Coalesce rapid Watermelon observer bursts (e.g. bulk sync) into one UI update. */
+const MASTER_DATA_REFRESH_DEBOUNCE_MS = 100;
 
 export function useMasterData(): MasterData {
   const [data, setData] = useState<MasterData>({
@@ -67,6 +76,7 @@ export function useMasterData(): MasterData {
 
   useEffect(() => {
     let cancelled = false;
+    const debounceRef = { t: null as ReturnType<typeof setTimeout> | null };
 
     const refresh = async () => {
       try {
@@ -95,26 +105,35 @@ export function useMasterData(): MasterData {
       }
     };
 
-    refresh();
+    const scheduleRefresh = () => {
+      if (debounceRef.t != null) clearTimeout(debounceRef.t);
+      debounceRef.t = setTimeout(() => {
+        debounceRef.t = null;
+        refresh().catch(() => {});
+      }, MASTER_DATA_REFRESH_DEBOUNCE_MS);
+    };
+
+    refresh().catch(() => {});
 
     const unsubCategories = database
       .get<FoodCategoryModel>('food_categories')
       .query()
       .observe()
-      .subscribe(() => refresh());
+      .subscribe(scheduleRefresh);
     const unsubItems = database
       .get<FoodItemModel>('food_items')
       .query()
       .observe()
-      .subscribe(() => refresh());
+      .subscribe(scheduleRefresh);
     const unsubModifiers = database
       .get<FoodModifierModel>('food_modifiers')
       .query()
       .observe()
-      .subscribe(() => refresh());
+      .subscribe(scheduleRefresh);
 
     return () => {
       cancelled = true;
+      if (debounceRef.t != null) clearTimeout(debounceRef.t);
       unsubCategories.unsubscribe();
       unsubItems.unsubscribe();
       unsubModifiers.unsubscribe();

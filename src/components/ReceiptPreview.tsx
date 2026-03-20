@@ -63,17 +63,19 @@ export function ReceiptPreview({ payload }: ReceiptPreviewProps) {
     lineMeta.push({});
   }
 
-  // ----- Table / order type + time -----
-  if (p.tableNumber != null && p.tableNumber > 0) {
-    lines.push(`Table: ${p.tableNumber}`);
-  } else {
-    lines.push(p.orderTypeLabel ?? 'Dine In');
-  }
-  if (p.orderTime) {
-    const last = lines.length - 1;
-    lines[last] = lines[last] + `  ${p.orderTime}`;
-  }
+  // ----- Order type + time (always), then table on its own line when set -----
+  const orderTypeLine = `${p.orderTypeLabel ?? 'Order'}${p.orderTime ? `  ${p.orderTime}` : ''}`;
+  lines.push(orderTypeLine);
   lineMeta.push({});
+  const tableText = (p.tableDisplay ?? '').trim();
+  const hasNumericTable = p.tableNumber != null && p.tableNumber > 0;
+  if (tableText !== '') {
+    lines.push(`Table: ${tableText}`);
+    lineMeta.push({});
+  } else if (hasNumericTable) {
+    lines.push(`Table: ${p.tableNumber}`);
+    lineMeta.push({});
+  }
   lines.push('');
   lineMeta.push({});
 

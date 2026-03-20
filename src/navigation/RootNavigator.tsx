@@ -4,7 +4,7 @@ import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { View, ActivityIndicator, Platform, StyleSheet } from 'react-native';
 import Icon from 'react-native-vector-icons/Feather';
-import { useApp } from '../context/AppContext';
+import { useAuth } from '../hooks/useAuth';
 import { colors } from '../theme';
 import LoginScreen from '../screens/LoginScreen';
 import POSScreen from '../screens/POS/POSScreen';
@@ -23,6 +23,7 @@ function MainTabs() {
   return (
     <Tab.Navigator
       screenOptions={({ route }) => ({
+        lazy: true,
         tabBarIcon: ({ color, size }) => <TabIcon routeName={route.name} color={color} size={size} />,
         tabBarActiveTintColor: colors.primary,
         tabBarInactiveTintColor: colors.textSubtle,
@@ -42,7 +43,7 @@ function MainTabs() {
 }
 
 export default function RootNavigator() {
-  const { auth, authHydrated } = useApp();
+  const { auth, authHydrated } = useAuth();
   const isAuthenticated = auth.isAuthenticated;
 
   if (!authHydrated) {
