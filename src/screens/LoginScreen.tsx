@@ -14,6 +14,8 @@ import Animated, { FadeInDown, FadeInUp } from 'react-native-reanimated';
 import Icon from 'react-native-vector-icons/Feather';
 import { useAuth } from '../hooks/useAuth';
 import { DEMO_USERS } from '../constants/demoData';
+import { storeConfig } from '../constants/storeConfig';
+import { loginWithCredentials, LoginApiError } from '../services/authService';
 import { colors, spacing, radius, typography } from '../theme';
 import { useResponsive } from '../hooks/useResponsive';
 import { PressableScale } from '../components/ui';
@@ -26,7 +28,32 @@ export default function LoginScreen() {
   const [loading, setLoading] = useState(false);
 
   const handleLogin = async () => {
-    const raw = (email || '').toLowerCase().trim();
+    const emailTrim = (email || '').trim();
+    const useApi = !!(storeConfig.authApiBase ?? '').trim();
+
+    if (useApi) {
+      if (!emailTrim || !password) {
+        Alert.alert('Login failed', 'Enter email and password');
+        return;
+      }
+      setLoading(true);
+      try {
+        await loginWithCredentials(emailTrim, password);
+      } catch (e) {
+        const msg =
+          e instanceof LoginApiError
+            ? e.message
+            : e instanceof Error
+              ? e.message
+              : 'Something went wrong';
+        Alert.alert('Login failed', msg);
+      } finally {
+        setLoading(false);
+      }
+      return;
+    }
+
+    const raw = emailTrim.toLowerCase();
     const key = raw.replace(/@.*$/, '') || raw;
     const cred = DEMO_USERS[raw] ?? DEMO_USERS[key];
     if (!cred || cred.password !== password) {

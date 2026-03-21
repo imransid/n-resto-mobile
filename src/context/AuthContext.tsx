@@ -10,16 +10,16 @@ import { Q } from '@nozbe/watermelondb';
 import { database } from '../database/databaseInstance';
 import { getPersistedSlice } from '../database';
 import type KeyValue from '../database/KeyValue';
-import type { DemoUser } from '../constants/demoData';
-import { type AuthState, INITIAL_AUTH } from '../types/auth';
-import { parseAuth, setStoredAuth, clearStoredAuth } from '../services/authService';
+import type { AuthUser, AuthState } from '../types/auth';
+import { INITIAL_AUTH } from '../types/auth';
+import { parseAuth, setStoredAuth, clearStoredAuth, userRowSyncFromAuthUser } from '../services/authService';
 
 export type { AuthState };
 
 interface AuthContextValue {
   auth: AuthState;
   authHydrated: boolean;
-  login: (user: DemoUser, accessToken: string) => Promise<void>;
+  login: (user: AuthUser, accessToken: string) => Promise<void>;
   logout: () => Promise<void>;
 }
 
@@ -65,8 +65,18 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   }, []);
 
-  const login = useCallback(async (user: DemoUser, accessToken: string) => {
-    await setStoredAuth({ user, accessToken, isAuthenticated: true });
+  const login = useCallback(async (user: AuthUser, accessToken: string) => {
+    await setStoredAuth(
+      {
+        user,
+        accessToken,
+        refreshToken: null,
+        accessTokenExpiresAt: null,
+        company: null,
+        isAuthenticated: true,
+      },
+      { userRow: userRowSyncFromAuthUser(user, null), companySync: null }
+    );
   }, []);
 
   const logout = useCallback(async () => {

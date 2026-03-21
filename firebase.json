@@ -1,0 +1,6 @@
+{
+  "react-native": {
+    "messaging_android_notification_channel_id": "nresto-admin-orders",
+    "messaging_android_notification_delegation_enabled": false
+  }
+}

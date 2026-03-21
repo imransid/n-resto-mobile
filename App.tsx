@@ -9,6 +9,8 @@ import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { AuthProvider } from './src/context/AuthContext';
 import { AppProvider } from './src/context/AppContext';
 import RootNavigator from './src/navigation/RootNavigator';
+import AdminOrderNotificationBridge from './src/components/AdminOrderNotificationBridge';
+import FcmNotificationBridge from './src/components/FcmNotificationBridge';
 import { SplashScreen } from './src/components/SplashScreen';
 import {
   loadMasterDataOnInit,
@@ -113,6 +115,8 @@ export default function App() {
       ) : (
         <AuthProvider>
           <AppProvider>
+            <AdminOrderNotificationBridge />
+            <FcmNotificationBridge />
             <SafeAreaProvider>
               <RootNavigator />
             </SafeAreaProvider>

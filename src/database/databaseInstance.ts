@@ -16,6 +16,7 @@ import FoodItem from './FoodItem';
 import FoodModifier from './FoodModifier';
 import AvailableTable from './AvailableTable';
 import Customer from './Customer';
+import Company from './Company';
 import TotalOrder from './TotalOrder';
 import OrderSyncQueue from './OrderSyncQueue';
 
@@ -40,6 +41,7 @@ export const database = new Database({
     FoodModifier,
     AvailableTable,
     Customer,
+    Company,
     TotalOrder,
     OrderSyncQueue,
   ],

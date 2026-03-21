@@ -1,24 +1,46 @@
-export interface DemoUser {
-  id: string;
-  email: string;
-  name: string;
-}
+import type { AuthUser } from '../types/auth';
+
+export type DemoUser = AuthUser;
 
 export const DEMO_USERS: Record<string, { user: DemoUser; password: string }> = {
   admin: {
-    user: { id: 'u1', email: 'admin@demo.com', name: 'Admin' },
+    user: {
+      id: 'u1',
+      email: 'admin@demo.com',
+      name: 'Admin',
+      role: 'ADMIN',
+      companyId: 'demo-company',
+    },
     password: 'Pass@1234',
   },
   staff: {
-    user: { id: 'u2', email: 'staff@demo.com', name: 'Staff' },
+    user: {
+      id: 'u2',
+      email: 'staff@demo.com',
+      name: 'Staff',
+      role: 'STAFF',
+      companyId: 'demo-company',
+    },
     password: 'Pass@1234',
   },
   waiter: {
-    user: { id: 'u3', email: 'waiter@demo.com', name: 'Waiter' },
+    user: {
+      id: 'u3',
+      email: 'waiter@demo.com',
+      name: 'Waiter',
+      role: 'STAFF',
+      companyId: 'demo-company',
+    },
     password: 'Pass@1234',
   },
   deliveryman: {
-    user: { id: 'u4', email: 'deliveryman@demo.com', name: 'Delivery Man' },
+    user: {
+      id: 'u4',
+      email: 'deliveryman@demo.com',
+      name: 'Delivery Man',
+      role: 'STAFF',
+      companyId: 'demo-company',
+    },
     password: 'Pass@1234',
   },
 };

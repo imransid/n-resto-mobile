@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "871305662473",
+    "project_id": "n-resto",
+    "storage_bucket": "n-resto.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:871305662473:android:8f8556f831053fc0eca8d8",
+        "android_client_info": {
+          "package_name": "com.nrestomobile"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBC2kzcW0AXZAxaciANUFjQucEu9N8f-As"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

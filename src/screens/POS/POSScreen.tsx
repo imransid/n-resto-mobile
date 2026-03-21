@@ -388,7 +388,10 @@ export default function POSScreen() {
       tableNumber: tableNumber || '',
       customerName: customerName || '',
       userId: auth.user?.id ?? '',
-      companyId: (storeConfig.masterDataCompanyId ?? '').trim(),
+      companyId: (
+        (auth.user?.companyId ?? '').trim() ||
+        (storeConfig.masterDataCompanyId ?? '').trim()
+      ),
       orderNotes: notesDraft.trim() || undefined,
       status: 'PENDING',
     };

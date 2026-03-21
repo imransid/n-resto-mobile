@@ -32,6 +32,7 @@ import {
   requestOrderUploadNow,
   scheduleOrderSync,
 } from '../services/orderBackgroundSyncService';
+import { maybeNotifyRelayForNewOrder } from '../services/staffOrderNotifyRelay';
 
 function orderToCompleted(order: Order): CompletedOrder {
   return {
@@ -350,6 +351,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         : Date.now();
       const ordersCollection = database.get<Order>('orders');
       const queueCollection = database.get<OrderSyncQueue>('order_sync_queue');
+      let createdLocalId = '';
       await database.write(async () => {
         const newOrder = await ordersCollection.create((r) => {
           r.created_at = createdAtMs;
@@ -364,10 +366,17 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           r.company_id = order.companyId || (storeConfig.masterDataCompanyId ?? '').trim() || null;
           r.items = JSON.stringify(order.items);
         });
+        createdLocalId = newOrder.id;
         await queueCollection.create((q) => {
           q.order_id = newOrder.id;
         });
       });
+      maybeNotifyRelayForNewOrder({
+        localOrderId: createdLocalId,
+        total: order.total,
+        companyId: (order.companyId || (storeConfig.masterDataCompanyId ?? '').trim() || '').trim(),
+        createdBy: order.userId,
+      }).catch(() => undefined);
       await refreshOrders();
       /** Outbox changed — sync does not run on “still online”; only connectivity flips / cold-start / foreground without this. */
       scheduleOrderSync('order_completed');

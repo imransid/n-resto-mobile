@@ -1,12 +1,15 @@
 import type { PaymentMethod } from '../types/pos';
 import {
   ASSETS_BASE_URL,
+  AUTH_API_BASE,
   CUSTOMERS_API_BASE,
   GRAPHQL_API_BASE,
   GRAPHQL_AUTHORIZATION,
   MASTER_DATA_COMPANY_ID,
   ORDERS_SYNC_AUTHORIZATION,
   ORDERS_SYNC_URL,
+  STAFF_ORDER_NOTIFY_AUTHORIZATION,
+  STAFF_ORDER_NOTIFY_URL,
   TABLES_API_BASE,
 } from '@env';
 
@@ -55,6 +58,18 @@ export interface StoreConfig {
   ordersSyncUrl?: string;
   /** Optional override for order sync `Authorization` header; defaults to `graphqlAuthorization` when unset. */
   ordersSyncAuthorization?: string;
+  /**
+   * Auth service base URL (no trailing path). Login uses POST `{authApiBase}/auth/login`.
+   * iOS Simulator: `http://localhost:4499`; Android emulator: `http://10.0.2.2:4499`.
+   * When empty, LoginScreen uses demo users only.
+   */
+  authApiBase?: string;
+  /**
+   * Optional POST URL called when a non-admin user saves an order (your backend can notify admins via FCM).
+   * Body: `{ event, localOrderId, total, companyId, createdBy, submittedByUserId, submittedByRole }`.
+   */
+  staffOrderNotifyUrl?: string;
+  staffOrderNotifyAuthorization?: string;
 }
 
 /** Defaults; merged with `.env` via react-native-dotenv. */
@@ -76,4 +91,7 @@ export const storeConfig: StoreConfig = {
   assetsBaseUrl: envTrim(ASSETS_BASE_URL),
   ordersSyncUrl: envTrim(ORDERS_SYNC_URL) || 'http://10.0.2.2:4899/orders/sync',
   ordersSyncAuthorization: envTrim(ORDERS_SYNC_AUTHORIZATION),
+  authApiBase: envTrim(AUTH_API_BASE),
+  staffOrderNotifyUrl: envTrim(STAFF_ORDER_NOTIFY_URL),
+  staffOrderNotifyAuthorization: envTrim(STAFF_ORDER_NOTIFY_AUTHORIZATION),
 };

@@ -1,7 +1,7 @@
 import { appSchema, tableSchema } from '@nozbe/watermelondb';
 
 export const schema = appSchema({
-  version: 12,
+  version: 14,
   tables: [
     tableSchema({
       name: 'key_value',
@@ -16,6 +16,25 @@ export const schema = appSchema({
         { name: 'user_id', type: 'string', isIndexed: true, isOptional: true },
         { name: 'email', type: 'string', isIndexed: true },
         { name: 'name', type: 'string' },
+        { name: 'phone', type: 'string', isOptional: true },
+        { name: 'role', type: 'string', isOptional: true, isIndexed: true },
+        { name: 'company_id', type: 'string', isOptional: true, isIndexed: true },
+        { name: 'avatar_url', type: 'string', isOptional: true },
+        /** Raw API user JSON for fields not mapped to columns (avoids frequent migrations). */
+        { name: 'profile_extra', type: 'string', isOptional: true },
+      ],
+    }),
+    tableSchema({
+      name: 'companies',
+      columns: [
+        { name: 'company_id', type: 'string', isIndexed: true },
+        { name: 'name', type: 'string' },
+        { name: 'address', type: 'string', isOptional: true },
+        { name: 'phone', type: 'string', isOptional: true },
+        { name: 'email', type: 'string', isOptional: true },
+        { name: 'website', type: 'string', isOptional: true },
+        { name: 'logo', type: 'string', isOptional: true },
+        { name: 'profile_extra', type: 'string', isOptional: true },
       ],
     }),
     tableSchema({

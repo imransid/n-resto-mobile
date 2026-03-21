@@ -7,6 +7,7 @@
 module.exports = {
   ORDERS_SYNC_URL: undefined,
   ORDERS_SYNC_AUTHORIZATION: undefined,
+  AUTH_API_BASE: undefined,
   GRAPHQL_API_BASE: undefined,
   GRAPHQL_AUTHORIZATION: undefined,
   TABLES_API_BASE: undefined,

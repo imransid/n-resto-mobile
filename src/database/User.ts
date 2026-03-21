@@ -12,4 +12,19 @@ export default class User extends Model {
 
   @field('name')
   name!: string;
+
+  @field('phone')
+  phone!: string | null;
+
+  @field('role')
+  role!: string | null;
+
+  @field('company_id')
+  company_id!: string | null;
+
+  @field('avatar_url')
+  avatar_url!: string | null;
+
+  @field('profile_extra')
+  profile_extra!: string | null;
 }

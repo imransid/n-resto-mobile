@@ -185,11 +185,44 @@ export const migrations = schemaMigrations({
           columns: [{ name: 'paid_at', type: 'number', isOptional: true }],
         }),
         unsafeExecuteSql(
-          `UPDATE orders SET paid_at = created_at WHERE status = 'PAID' AND paid_at IS NULL`
+          `UPDATE orders SET paid_at = created_at WHERE status = 'PAID' AND paid_at IS NULL;`
         ),
         unsafeExecuteSql(
-          `CREATE INDEX IF NOT EXISTS idx_orders_status_paid_at ON orders(status, paid_at)`
+          `CREATE INDEX IF NOT EXISTS idx_orders_status_paid_at ON orders(status, paid_at);`
         ),
+      ],
+    },
+    {
+      toVersion: 13,
+      steps: [
+        addColumns({
+          table: 'users',
+          columns: [
+            { name: 'phone', type: 'string', isOptional: true },
+            { name: 'role', type: 'string', isOptional: true, isIndexed: true },
+            { name: 'company_id', type: 'string', isOptional: true, isIndexed: true },
+            { name: 'avatar_url', type: 'string', isOptional: true },
+            { name: 'profile_extra', type: 'string', isOptional: true },
+          ],
+        }),
+      ],
+    },
+    {
+      toVersion: 14,
+      steps: [
+        createTable({
+          name: 'companies',
+          columns: [
+            { name: 'company_id', type: 'string', isIndexed: true },
+            { name: 'name', type: 'string' },
+            { name: 'address', type: 'string', isOptional: true },
+            { name: 'phone', type: 'string', isOptional: true },
+            { name: 'email', type: 'string', isOptional: true },
+            { name: 'website', type: 'string', isOptional: true },
+            { name: 'logo', type: 'string', isOptional: true },
+            { name: 'profile_extra', type: 'string', isOptional: true },
+          ],
+        }),
       ],
     },
   ],
