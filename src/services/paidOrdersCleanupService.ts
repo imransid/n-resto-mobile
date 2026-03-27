@@ -22,7 +22,7 @@ function cleanupDbg(message: string, ...args: unknown[]) {
 }
 
 /**
- * Delete PAID orders where paid_at is older than 5 hours.
+ * Delete PAID orders where paid_at is older than 5 hours and already synced.
  * Uses DB-level filter (no in-memory scan). Removes order_sync_queue rows.
  */
 export async function runPaidOrdersCleanup(): Promise<number> {
@@ -32,7 +32,11 @@ export async function runPaidOrdersCleanup(): Promise<number> {
 
   const toDelete = await ordersCollection
     .query(
-      Q.and(Q.where('status', 'PAID'), Q.where('paid_at', Q.lt(cutoff)))
+      Q.and(
+        Q.where('status', 'PAID'),
+        Q.where('paid_at', Q.lt(cutoff)),
+        Q.where('order_sync_status', true)
+      )
     )
     .fetch();
 

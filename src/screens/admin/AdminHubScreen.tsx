@@ -38,10 +38,12 @@ export default function AdminHubScreen() {
             <Icon name="shield" size={36} color={colors.primaryContrast} />
           </View>
           <Text style={styles.heroTitle}>Where to next?</Text>
-          <Text style={styles.heroHint}>Open the dashboard for today’s numbers or the POS to take orders.</Text>
+          <Text style={styles.heroHint}>
+            Dashboard, kitchen line, or POS — pick where you’re working.
+          </Text>
         </Animated.View>
 
-        <Animated.View entering={FadeInDown.delay(120).duration(440).springify()} style={styles.cards}>
+        <Animated.View entering={FadeInDown.delay(100).duration(440).springify()} style={styles.cards}>
           <PressableScale
             style={styles.card}
             activeScale={0.98}
@@ -53,6 +55,36 @@ export default function AdminHubScreen() {
             <View style={styles.cardText}>
               <Text style={styles.cardTitle}>Dashboard</Text>
               <Text style={styles.cardSub}>Completed orders today · menu availability</Text>
+            </View>
+            <Icon name="chevron-right" size={22} color={colors.textSubtle} />
+          </PressableScale>
+
+          <PressableScale
+            style={styles.card}
+            activeScale={0.98}
+            onPress={() => navigation.navigate('Kitchen')}
+          >
+            <View style={[styles.cardIcon, styles.cardIconKitchen]}>
+              <Icon name="clipboard" size={28} color="#fb923c" />
+            </View>
+            <View style={styles.cardText}>
+              <Text style={styles.cardTitle}>Kitchen</Text>
+              <Text style={styles.cardSub}>Live tickets · advance prep · dine-in & pickup</Text>
+            </View>
+            <Icon name="chevron-right" size={22} color={colors.textSubtle} />
+          </PressableScale>
+
+          <PressableScale
+            style={styles.card}
+            activeScale={0.98}
+            onPress={() => navigation.navigate('PurchaseRequisition')}
+          >
+            <View style={[styles.cardIcon, styles.cardIconRequisition]}>
+              <Icon name="shopping-cart" size={28} color="#38bdf8" />
+            </View>
+            <View style={styles.cardText}>
+              <Text style={styles.cardTitle}>Purchase Requisition</Text>
+              <Text style={styles.cardSub}>Chef requests · urgent needs · procurement list</Text>
             </View>
             <Icon name="chevron-right" size={22} color={colors.textSubtle} />
           </PressableScale>
@@ -153,6 +185,12 @@ const styles = StyleSheet.create({
   },
   cardIconPos: {
     backgroundColor: 'rgba(5, 150, 105, 0.12)',
+  },
+  cardIconKitchen: {
+    backgroundColor: 'rgba(251, 146, 60, 0.14)',
+  },
+  cardIconRequisition: {
+    backgroundColor: 'rgba(56, 189, 248, 0.16)',
   },
   cardText: {
     flex: 1,

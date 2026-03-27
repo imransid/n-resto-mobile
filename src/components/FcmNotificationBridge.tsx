@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react';
 import { useAuth } from '../hooks/useAuth';
+import { shouldReceivePushForAuthUser } from '../services/fcmAdminGate';
 import { displayFcmForeground } from '../services/fcmDisplay';
 import {
   registerDeviceForFcm,
@@ -9,8 +10,8 @@ import {
 } from '../services/fcmRegistration';
 
 /**
- * After login: registers the FCM token with auth-service
- * `POST /notifications/users/:userId/devices` when `AUTH_API_BASE` is set.
+ * ADMIN only: registers FCM with auth-service and shows foreground pushes.
+ * Staff sessions: unregisters device + deletes token so this device is not targeted.
  * On teardown/logout: `DELETE /notifications/devices` then `deleteToken()`.
  */
 export default function FcmNotificationBridge() {
@@ -26,12 +27,18 @@ export default function FcmNotificationBridge() {
       return;
     }
 
+    if (!shouldReceivePushForAuthUser(auth.user)) {
+      unregisterFcmDevice(auth).catch(() => undefined);
+      return;
+    }
+
     let releaseForeground: (() => void) | undefined;
     let releaseRefresh: (() => void) | undefined;
 
     const run = async () => {
       await registerDeviceForFcm(authSnapRef.current);
       releaseForeground = subscribeFcmForeground((remoteMessage) => {
+        if (!shouldReceivePushForAuthUser(authSnapRef.current.user)) return;
         displayFcmForeground(remoteMessage).catch(() => undefined);
       });
       releaseRefresh = subscribeFcmTokenRefresh(() => authSnapRef.current);
@@ -46,7 +53,7 @@ export default function FcmNotificationBridge() {
       releaseRefresh?.();
       unregisterFcmDevice(authSnapRef.current).catch(() => undefined);
     };
-  }, [authHydrated, auth.isAuthenticated, auth.user?.id]);
+  }, [authHydrated, auth.isAuthenticated, auth.user?.id, auth.user?.role, auth.accessToken]);
 
   return null;
 }

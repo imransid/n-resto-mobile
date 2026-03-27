@@ -8,6 +8,8 @@ import LoginScreen from '../screens/LoginScreen';
 import MainTabs from './MainTabs';
 import AdminHubScreen from '../screens/admin/AdminHubScreen';
 import AdminDashboardScreen from '../screens/admin/AdminDashboardScreen';
+import KitchenScreen from '../screens/admin/KitchenScreen';
+import PurchaseRequisitionScreen from '../screens/admin/PurchaseRequisitionScreen';
 import { isAdminRole } from '../utils/userRole';
 import type { AuthenticatedStackParamList } from './types';
 
@@ -52,6 +54,16 @@ export default function RootNavigator() {
             name="AdminDashboard"
             component={AdminDashboardScreen}
             options={{ title: 'Dashboard', headerBackTitle: 'Hub' }}
+          />
+          <AppStack.Screen
+            name="Kitchen"
+            component={KitchenScreen}
+            options={{ title: 'Kitchen', headerBackTitle: 'Hub' }}
+          />
+          <AppStack.Screen
+            name="PurchaseRequisition"
+            component={PurchaseRequisitionScreen}
+            options={{ title: 'Purchase Requisition', headerBackTitle: 'Hub' }}
           />
         </AppStack.Navigator>
       )}

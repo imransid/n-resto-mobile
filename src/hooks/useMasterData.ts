@@ -1,6 +1,5 @@
 /**
  * Load categories, food items, and modifiers from WatermelonDB for POS.
- * Falls back to demo data when DB is empty. Re-renders when DB changes.
  */
 import { useEffect, useState } from 'react';
 import { database } from '../database/databaseInstance';
@@ -9,13 +8,19 @@ import type FoodItemModel from '../database/FoodItem';
 import type FoodModifierModel from '../database/FoodModifier';
 import type { FoodItem } from '../constants/demoData';
 import type { Modifier } from '../types/pos';
-import { CATEGORIES, DEMO_FOOD_ITEMS, DEMO_MODIFIERS } from '../constants/demoData';
+import { parseFoodItemPosMeta } from '../utils/parseFoodItemPosMeta';
 
 export interface MasterData {
   categories: { id: string; label: string }[];
   items: FoodItem[];
   modifiers: Modifier[];
 }
+
+const EMPTY_MASTER_DATA: MasterData = {
+  categories: [{ id: 'All', label: 'All' }],
+  items: [],
+  modifiers: [],
+};
 
 async function loadFromDb(): Promise<MasterData> {
   const categoriesCollection = database.get<FoodCategoryModel>('food_categories');
@@ -39,6 +44,7 @@ async function loadFromDb(): Promise<MasterData> {
     const raw = item.price as unknown;
     const price =
       typeof raw === 'number' && Number.isFinite(raw) ? raw : Number(raw) || 0;
+    const extra = parseFoodItemPosMeta(item.pos_meta);
     return {
       id: item.id,
       item_name: item.item_name,
@@ -47,6 +53,7 @@ async function loadFromDb(): Promise<MasterData> {
       status: item.status,
       category: categoryIdToName.get(item.category_id) ?? '',
       item_image_local: item.item_image_local ?? null,
+      ...extra,
     };
   });
 
@@ -68,11 +75,7 @@ async function loadFromDb(): Promise<MasterData> {
 const MASTER_DATA_REFRESH_DEBOUNCE_MS = 100;
 
 export function useMasterData(): MasterData {
-  const [data, setData] = useState<MasterData>({
-    categories: CATEGORIES,
-    items: DEMO_FOOD_ITEMS,
-    modifiers: DEMO_MODIFIERS,
-  });
+  const [data, setData] = useState<MasterData>(EMPTY_MASTER_DATA);
 
   useEffect(() => {
     let cancelled = false;
@@ -86,22 +89,9 @@ export function useMasterData(): MasterData {
           next.items.length > 0 ||
           next.categories.length > 1 ||
           next.modifiers.length > 0;
-        setData(
-          useDb
-            ? next
-            : {
-                categories: CATEGORIES,
-                items: DEMO_FOOD_ITEMS,
-                modifiers: DEMO_MODIFIERS,
-              }
-        );
+        setData(useDb ? next : EMPTY_MASTER_DATA);
       } catch {
-        if (!cancelled)
-          setData({
-            categories: CATEGORIES,
-            items: DEMO_FOOD_ITEMS,
-            modifiers: DEMO_MODIFIERS,
-          });
+        if (!cancelled) setData(EMPTY_MASTER_DATA);
       }
     };
 

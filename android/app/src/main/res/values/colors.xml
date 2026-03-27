@@ -2,4 +2,6 @@
 <resources>
     <!-- Splash / app dark background -->
     <color name="splash_background">#0f172a</color>
+    <!-- Adaptive launcher: white base (like Gmail/Chrome) for contrast and clarity -->
+    <color name="ic_launcher_background">#FFFFFF</color>
 </resources>

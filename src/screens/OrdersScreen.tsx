@@ -59,17 +59,6 @@ const ORDER_TYPE_LABELS: Record<OrderType, string> = {
   DELIVERY: 'Delivery',
 };
 
-/** Statuses user can set when editing (includes Cancel) */
-const STATUS_OPTIONS: OrderStatus[] = [
-  'PENDING',
-  'CONFIRMED',
-  'PREPARING',
-  'READY',
-  'DELIVERED',
-  'PAID',
-  'CANCELLED',
-];
-
 const STATUS_LABELS: Record<OrderStatus, string> = {
   PENDING: 'Pending',
   CONFIRMED: 'Confirmed',
@@ -301,7 +290,6 @@ export default function OrdersScreen() {
   const [filterStatus, setFilterStatus] = useState<FilterStatus>('all');
   const [filterCollapsed, setFilterCollapsed] = useState(true);
   const [editingOrder, setEditingOrder] = useState<CompletedOrder | null>(null);
-  const [editStatus, setEditStatus] = useState<OrderStatus>('CONFIRMED');
   const [editPayment, setEditPayment] = useState<PaymentMethod>('MOBILE');
   const [orderForPayment, setOrderForPayment] = useState<CompletedOrder | null>(null);
   const [paymentAmount, setPaymentAmount] = useState('0.00');
@@ -412,7 +400,6 @@ export default function OrdersScreen() {
 
   const openEdit = useCallback((order: CompletedOrder) => {
     setEditingOrder(order);
-    setEditStatus((order.status ?? 'PENDING') as OrderStatus);
     const allowed: PaymentMethod[] = ENABLED_PAYMENT_METHODS.length > 0 ? ENABLED_PAYMENT_METHODS : ['CASH'];
     const method = allowed.includes(order.paymentMethod) ? order.paymentMethod : allowed[0];
     setEditPayment(method);
@@ -428,7 +415,6 @@ export default function OrdersScreen() {
     if (!editingOrder) return;
     await updateOrderInHistory({
       orderId: editingOrder.id,
-      status: editStatus,
       paymentMethod: editPayment,
     });
     setEditingOrder(null);
@@ -440,12 +426,6 @@ export default function OrdersScreen() {
     const allowed: PaymentMethod[] = ENABLED_PAYMENT_METHODS.length > 0 ? ENABLED_PAYMENT_METHODS : ['CASH'];
     const method = allowed.includes(order.paymentMethod) ? order.paymentMethod : allowed[0];
     setPaymentMethodForPay(method);
-    setEditingOrder(null);
-  };
-
-  const openUpdateOrder = (order: CompletedOrder) => {
-    setOrderToUpdate(order);
-    setUpdateOrderCart([]);
     setEditingOrder(null);
   };
 
@@ -715,7 +695,7 @@ export default function OrdersScreen() {
         <Animated.View entering={FadeIn.delay(140).duration(300)} style={styles.listHeader}>
           <Text style={styles.listTitle}>Order list</Text>
           <Text style={styles.listSubtitle}>
-            Tap an order to update status, add items or collect payment
+            Tap an unpaid order to set payment method or collect payment. Status updates from the kitchen line.
           </Text>
         </Animated.View>
 
@@ -757,7 +737,7 @@ export default function OrdersScreen() {
                 <Pressable style={StyleSheet.absoluteFill} onPress={() => setEditingOrder(null)} />
                 <Animated.View entering={FadeInDown.duration(280).springify()} style={styles.editCard}>
                   <View style={styles.editHeader}>
-                    <Text style={styles.editTitle}>Change status & payment</Text>
+                    <Text style={styles.editTitle}>Payment</Text>
                     <TouchableOpacity onPress={() => setEditingOrder(null)} hitSlop={12}>
                       <Icon name="x" size={24} color="#64748b" />
                     </TouchableOpacity>
@@ -767,20 +747,38 @@ export default function OrdersScreen() {
                       <Text style={styles.editOrderSummary}>
                         {formatDate(editingOrder.createdAt)} • ${editingOrder.total.toFixed(2)}
                       </Text>
-                      <Text style={styles.editSectionLabel}>Status</Text>
-                      <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.editChipsScroll}>
-                        {STATUS_OPTIONS.map((s) => (
-                          <TouchableOpacity
-                            key={s}
-                            style={[styles.editChip, editStatus === s && styles.editChipActive]}
-                            onPress={() => setEditStatus(s)}
-                          >
-                            <Text style={[styles.editChipText, editStatus === s && styles.editChipTextActive]}>
-                              {STATUS_LABELS[s]}
-                            </Text>
-                          </TouchableOpacity>
-                        ))}
-                      </ScrollView>
+                      <Text style={styles.editSectionLabel}>Payment method</Text>
+                      <View style={styles.editPaymentRow}>
+                        {ALL_PAYMENT_METHODS.map((pm) => {
+                          const enabled = ENABLED_PAYMENT_METHODS.includes(pm);
+                          return (
+                            <TouchableOpacity
+                              key={pm}
+                              style={[
+                                styles.editPaymentChip,
+                                editPayment === pm && styles.editPaymentChipActive,
+                                !enabled && styles.editPaymentChipDisabled,
+                              ]}
+                              onPress={() => enabled && setEditPayment(pm)}
+                              disabled={!enabled}
+                              activeOpacity={enabled ? 0.7 : 1}
+                            >
+                              <Text style={styles.editPaymentEmoji} allowFontScaling={false}>
+                                {PAYMENT_EMOJI[pm]}
+                              </Text>
+                              <Text
+                                style={[
+                                  styles.editPaymentChipText,
+                                  editPayment === pm && styles.editPaymentChipTextActive,
+                                  !enabled && styles.editPaymentChipTextDisabled,
+                                ]}
+                              >
+                                {PAYMENT_LABELS[pm]}
+                              </Text>
+                            </TouchableOpacity>
+                          );
+                        })}
+                      </View>
                       {(editingOrder.status ?? 'PENDING') !== 'PAID' && (
                         <TouchableOpacity
                           style={styles.collectPaymentBtn}
@@ -790,13 +788,6 @@ export default function OrdersScreen() {
                           <Text style={styles.collectPaymentBtnText}>Collect payment</Text>
                         </TouchableOpacity>
                       )}
-                      <TouchableOpacity
-                        style={styles.updateOrderBtn}
-                        onPress={() => openUpdateOrder(editingOrder)}
-                      >
-                        <Icon name="plus-circle" size={20} color="#0ea5e9" />
-                        <Text style={styles.updateOrderBtnText}>Update order (add items)</Text>
-                      </TouchableOpacity>
                       <TouchableOpacity style={styles.saveEditBtn} onPress={saveEdit}>
                         <Icon name="check" size={20} color="#fff" />
                         <Text style={styles.saveEditBtnText}>Save</Text>

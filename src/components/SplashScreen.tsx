@@ -17,8 +17,8 @@ import Animated, {
 } from 'react-native-reanimated';
 
 const { width } = Dimensions.get('window');
-const SPLASH_MIN_MS = 2200;
-const FADE_OUT_DURATION_MS = 450;
+const SPLASH_MIN_MS = 1100;
+const FADE_OUT_DURATION_MS = 320;
 
 type Props = {
   onFinish: () => void;

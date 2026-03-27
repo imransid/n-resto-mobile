@@ -298,6 +298,7 @@ export async function persistMasterDataToDb(
         item.status = f.status ?? true;
         item.category_id = categoryId;
         item.item_image_local = null;
+        item.pos_meta = null;
       });
       apiItemIdToLocalRecordId.set(f.id, record.id);
     }

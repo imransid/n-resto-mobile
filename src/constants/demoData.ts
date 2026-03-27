@@ -1,4 +1,9 @@
 import type { AuthUser } from '../types/auth';
+import type {
+  CatalogItemPrice,
+  CatalogModifierGroup,
+  CatalogVariantGroup,
+} from '../types/posCatalog';
 
 export type DemoUser = AuthUser;
 
@@ -54,6 +59,10 @@ export interface FoodItem {
   category: string;
   /** Local image path (from DB); when set, POS shows image instead of placeholder */
   item_image_local?: string | null;
+  /** From published catalog / pos_meta */
+  pricesByChannel?: CatalogItemPrice[];
+  variantGroups?: CatalogVariantGroup[];
+  modifierGroups?: CatalogModifierGroup[];
 }
 
 export const DEMO_FOOD_ITEMS: FoodItem[] = [

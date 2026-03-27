@@ -39,6 +39,9 @@ export default class Order extends Model {
   @field('paid_at')
   paid_at!: number | null;
 
+  @field('order_sync_status')
+  order_sync_status!: boolean;
+
   @field('created_by')
   created_by!: string | null;
 

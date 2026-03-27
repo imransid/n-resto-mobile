@@ -1,5 +1,7 @@
 import type { AuthUser, SessionCompany } from '../types/auth';
 
+import { Platform } from 'react-native';
+
 const LOGIN_PATH = '/auth/login';
 const DEFAULT_TIMEOUT_MS = 20_000;
 
@@ -11,7 +13,76 @@ export class LoginApiError extends Error {
 }
 
 function normalizeBaseUrl(base: string): string {
-  return base.replace(/\/+$/, '');
+  const trimmed = base.replace(/\/+$/, '');
+  if (
+    Platform.OS === 'android' &&
+    (trimmed.includes('localhost') || trimmed.includes('127.0.0.1'))
+  ) {
+    return trimmed.replace(/localhost|127\.0\.0\.1/g, '10.0.2.2');
+  }
+  if (Platform.OS === 'ios' && trimmed.includes('10.0.2.2')) {
+    // `10.0.2.2` is Android emulator host loopback; for iOS simulator use localhost.
+    return trimmed.replace(/10\.0\.2\.2/g, 'localhost');
+  }
+  return trimmed;
+}
+
+function swapHost(base: string, fromHost: string, toHost: string): string {
+  return base.replace(new RegExp(fromHost.replace(/\./g, '\\.'), 'g'), toHost);
+}
+
+function buildFallbackBaseUrls(base: string): string[] {
+  const out: string[] = [base];
+  const hasLocalhost = base.includes('localhost');
+  const hasLoopback = base.includes('127.0.0.1');
+  const hasAndroidBridge = base.includes('10.0.2.2');
+
+  // Always include loopback alternatives to survive wrong env values on iOS/Android simulators.
+  if (hasLocalhost) {
+    out.push(swapHost(base, 'localhost', '127.0.0.1'));
+    out.push(swapHost(base, 'localhost', '10.0.2.2'));
+  }
+  if (hasLoopback) {
+    out.push(swapHost(base, '127.0.0.1', 'localhost'));
+    out.push(swapHost(base, '127.0.0.1', '10.0.2.2'));
+  }
+  if (hasAndroidBridge) {
+    out.push(swapHost(base, '10.0.2.2', 'localhost'));
+    out.push(swapHost(base, '10.0.2.2', '127.0.0.1'));
+  }
+
+  // If a LAN IP is configured but unreachable from emulator, add host loopback bridge as fallback.
+  if (!hasAndroidBridge) {
+    try {
+      const u = new URL(base);
+      const isIpv4 = /^\d{1,3}(\.\d{1,3}){3}$/.test(u.hostname);
+      if (isIpv4) {
+        const auth = u.port ? `10.0.2.2:${u.port}` : '10.0.2.2';
+        out.push(`${u.protocol}//${auth}${u.pathname}`.replace(/\/+$/, ''));
+      }
+    } catch {
+      // Keep fallback best-effort only.
+    }
+  }
+
+  // Preserve deterministic priority:
+  // - Current platform preferred host first, then alternates.
+  const deduped = Array.from(new Set(out));
+  if (Platform.OS === 'ios') {
+    deduped.sort((a, b) => {
+      const rank = (v: string) =>
+        v.includes('localhost') ? 0 : v.includes('127.0.0.1') ? 1 : v.includes('10.0.2.2') ? 2 : 3;
+      return rank(a) - rank(b);
+    });
+  } else if (Platform.OS === 'android') {
+    deduped.sort((a, b) => {
+      const rank = (v: string) =>
+        v.includes('10.0.2.2') ? 0 : v.includes('localhost') ? 1 : v.includes('127.0.0.1') ? 2 : 3;
+      return rank(a) - rank(b);
+    });
+  }
+
+  return deduped;
 }
 
 function asNonEmptyString(v: unknown): string | null {
@@ -207,30 +278,49 @@ export async function postLogin(
   password: string,
   timeoutMs = DEFAULT_TIMEOUT_MS
 ): Promise<LoginSuccess> {
-  const base = normalizeBaseUrl(apiBase.trim());
-  if (!base) throw new LoginApiError('Auth API base URL is empty');
+  const normalizedBase = normalizeBaseUrl(apiBase.trim());
+  if (!normalizedBase) throw new LoginApiError('Auth API base URL is empty');
+  const candidateBases = buildFallbackBaseUrls(normalizedBase);
+  let res: Response | null = null;
+  let lastError: unknown = null;
+  let lastUrl = '';
 
-  const url = `${base}${LOGIN_PATH}`;
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  let res: Response;
-  try {
-    res = await fetch(url, {
-      method: 'POST',
-      headers: {
-        Accept: 'application/json',
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ email, password }),
-      signal: controller.signal,
-    });
-  } catch (e) {
-    if (e instanceof Error && e.name === 'AbortError') {
-      throw new LoginApiError('Login timed out. Check the server URL and network.');
+  for (const base of candidateBases) {
+    const url = `${base}${LOGIN_PATH}`;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    lastUrl = url;
+    try {
+      res = await fetch(url, {
+        method: 'POST',
+        headers: {
+          Accept: 'application/json',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ email, password }),
+        signal: controller.signal,
+      });
+      break;
+    } catch (e) {
+      lastError = e;
+      continue;
+    } finally {
+      clearTimeout(timer);
     }
-    throw new LoginApiError(e instanceof Error ? e.message : 'Network error');
-  } finally {
-    clearTimeout(timer);
+  }
+
+  if (!res) {
+    if (lastError instanceof Error && lastError.name === 'AbortError') {
+      let hint = '';
+      if (Platform.OS === 'ios') {
+        hint =
+          ' On iOS physical device, use your Mac LAN IP (not localhost/10.0.2.2).';
+      }
+      throw new LoginApiError(`Login timed out at ${lastUrl}.${hint}`);
+    }
+    throw new LoginApiError(
+      lastError instanceof Error ? `${lastError.message} (${lastUrl})` : `Network error (${lastUrl})`
+    );
   }
 
   const text = await res.text();

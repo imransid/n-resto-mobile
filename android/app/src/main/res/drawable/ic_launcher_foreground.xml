@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  NRestoMobile — bold teal N on white. High contrast for instant recognition.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path
+        android:fillColor="#0D9488"
+        android:pathData="M14,10h24v88H14z" />
+    <path
+        android:fillColor="#0D9488"
+        android:pathData="M36,10L60,10L76,98L52,98Z" />
+    <path
+        android:fillColor="#0D9488"
+        android:pathData="M72,10h22v88H72z" />
+</vector>

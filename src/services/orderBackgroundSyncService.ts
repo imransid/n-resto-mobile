@@ -1,6 +1,6 @@
 /**
- * When the device is online, uploads **pending** orders from `order_sync_queue` to the backend
- * (no sync flag on `orders`). On 2xx: dequeue; delete local `orders` rows except the newest
+ * When the device is online, uploads **pending** orders from `order_sync_queue` to the backend.
+ * On 2xx: mark `orders.order_sync_status = true`, dequeue, then delete local synced rows except the newest
  * `KEEP_LAST_ORDERS_LOCAL` kept for the Orders screen.
  *
  * - Foreground: native connectivity thread + debounced JS (see `startOrderBackgroundSync`).
@@ -68,7 +68,14 @@ export function requestOrderUploadNow(reason = 'order_completed'): void {
 }
 
 function ordersSyncUrl(): string {
-  return (storeConfig.ordersSyncUrl ?? '').trim();
+  const base = (storeConfig.ordersSyncUrl ?? '').trim();
+  if (
+    Platform.OS === 'android' &&
+    (base.includes('localhost') || base.includes('127.0.0.1'))
+  ) {
+    return base.replace(/localhost|127\.0\.0\.1/g, '10.0.2.2');
+  }
+  return base;
 }
 
 function ordersAuthHeader(): string | undefined {
@@ -112,8 +119,8 @@ export type OrderSyncRunOptions = {
 };
 
 /**
- * Upload **pending queue** orders only (`order_sync_queue`); no `sent` flag on `orders`.
- * On 2xx: dequeue; delete synced `orders` rows except the **newest KEEP_LAST_ORDERS_LOCAL** kept for UI.
+ * Upload **pending queue** orders only (`order_sync_queue`).
+ * On 2xx: mark rows synced; dequeue; delete synced `orders` rows except the **newest KEEP_LAST_ORDERS_LOCAL** kept for UI.
  */
 export async function runOrderUploadAndClear(
   reason = 'manual',
@@ -245,6 +252,17 @@ export async function runOrderUploadAndClear(
     const syncedIds = new Set(rowsToSend.map((r) => r.id));
 
     await database.write(async () => {
+      for (const id of syncedIds) {
+        try {
+          const order = await ordersCollection.find(id);
+          await order.update((r) => {
+            r.order_sync_status = true;
+          });
+        } catch {
+          /* already gone */
+        }
+      }
+
       const allOrders = await ordersCollection.query().fetch();
       const sortedByNewest = [...allOrders].sort((a, b) => b.created_at - a.created_at);
       const protectedIds = new Set(
@@ -255,7 +273,9 @@ export async function runOrderUploadAndClear(
         if (!protectedIds.has(id)) {
           try {
             const o = await ordersCollection.find(id);
-            await o.destroyPermanently();
+            if (o.order_sync_status === true) {
+              await o.destroyPermanently();
+            }
           } catch {
             /* already gone */
           }

@@ -19,6 +19,14 @@ export const colors = {
   surfaceSecondary: '#f8fafc',
   surfaceTertiary: '#f1f5f9',
   surfaceElevated: '#ffffff',
+  /** POS menu backdrop — warm off-white (clean ordering-app style) */
+  posCanvas: '#fafaf9',
+  posCardWash: '#ffffff',
+  /** POS warm accent (prices, CTAs on menu) — app chrome elsewhere may still use teal `primary` */
+  posAccent: '#f97316',
+  posAccentDark: '#ea580c',
+  posAccentMuted: 'rgba(249, 115, 22, 0.14)',
+  posAccentSoft: 'rgba(249, 115, 22, 0.08)',
 
   // Text hierarchy
   text: '#0f172a',

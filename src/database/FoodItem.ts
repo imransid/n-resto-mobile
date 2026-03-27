@@ -24,6 +24,10 @@ export default class FoodItem extends Model {
   @field('item_image_local')
   item_image_local!: string | null;
 
+  /** JSON snapshot: channel prices, variant/modifier groups */
+  @field('pos_meta')
+  pos_meta!: string | null;
+
   @relation('food_categories', 'category_id')
   category!: Relation<FoodCategory>;
 }

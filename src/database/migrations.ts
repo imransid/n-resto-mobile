@@ -225,5 +225,26 @@ export const migrations = schemaMigrations({
         }),
       ],
     },
+    {
+      toVersion: 15,
+      steps: [
+        addColumns({
+          table: 'orders',
+          columns: [{ name: 'order_sync_status', type: 'boolean', isOptional: true }],
+        }),
+        unsafeExecuteSql(
+          `UPDATE orders SET order_sync_status = 0 WHERE order_sync_status IS NULL;`
+        ),
+      ],
+    },
+    {
+      toVersion: 16,
+      steps: [
+        addColumns({
+          table: 'food_items',
+          columns: [{ name: 'pos_meta', type: 'string', isOptional: true }],
+        }),
+      ],
+    },
   ],
 });

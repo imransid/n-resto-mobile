@@ -3,11 +3,17 @@
   "version": "0.0.1",
   "private": true,
   "scripts": {
+    "version:bump": "node scripts/version-bump.js",
     "android": "react-native run-android",
+    "preandroid": "npm run version:bump",
     "android:build": "cd android && ./gradlew assembleDebug",
+    "preandroid:build": "npm run version:bump",
     "android:release": "cd android && ./gradlew assembleRelease",
+    "preandroid:release": "npm run version:bump",
     "android:apk": "cd android && ./gradlew assembleRelease",
+    "preandroid:apk": "npm run version:bump",
     "ios": "react-native run-ios",
+    "preios": "npm run version:bump",
     "lint": "eslint .",
     "start": "react-native start",
     "test": "jest"

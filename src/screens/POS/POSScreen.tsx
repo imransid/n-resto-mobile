@@ -11,7 +11,10 @@ import {
   Modal,
   Pressable,
   FlatList,
+  ActivityIndicator,
+  Vibration,
   Image,
+  type ListRenderItemInfo,
 } from 'react-native';
 import { useWindowDimensions } from 'react-native';
 import { useResponsive } from '../../hooks/useResponsive';
@@ -28,6 +31,7 @@ import Animated, {
 } from 'react-native-reanimated';
 import Icon from 'react-native-vector-icons/Feather';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useIsFocused, useFocusEffect } from '@react-navigation/native';
 import { useApp } from '../../context/AppContext';
 import { useAuth } from '../../hooks/useAuth';
 import {
@@ -46,9 +50,24 @@ import { storeConfig } from '../../constants/storeConfig';
 import { getTables, type TableItem } from '../../services/tablesService';
 import { getCustomersForPos, type CustomerItem } from '../../services/customersService';
 import type { FoodItem } from '../../constants/demoData';
+import { amountForChannel } from '../../utils/posPricing';
+import { formatMenuMoney, formatPriceDelta } from '../../utils/formatMenuMoney';
+import {
+  defaultModifiersForVariantGroups,
+  defaultVariantPriceDeltaSum,
+  foodHasVariantGroups,
+  initialVariantSelectionsFromGroups,
+  variantDeltaRange,
+} from '../../utils/posCatalogHelpers';
 import { colors as themeColors, spacing, radius, typography, shadows } from '../../theme';
 import { Badge, EmptyState, PressableScale } from '../../components/ui';
 import { CATEGORY_EMOJI, ORDER_TYPE_EMOJI, FEATHER_ICONS } from '../../constants/appIcons';
+import { PosFoodCard } from './PosFoodCard';
+import {
+  FOOD_LIST_INITIAL_NUM,
+  FOOD_LIST_MAX_BATCH,
+  FOOD_LIST_WINDOW_SIZE,
+} from './posConstants';
 
 const ORDER_TYPES: { id: OrderType; label: string }[] = [
   { id: 'DINE_IN', label: 'Dine In' },
@@ -56,16 +75,16 @@ const ORDER_TYPES: { id: OrderType; label: string }[] = [
   { id: 'DELIVERY', label: 'Delivery' },
 ];
 
-const ACCENT = themeColors.primary;
+const ACCENT = themeColors.posAccent;
+/** Stacked POS chrome: uniform row height + vertical gap between rows */
+const POS_HEADER_ROW_HEIGHT = 56;
+const POS_HEADER_GAP = 4;
+/** Delivery-style floating bar (charcoal) — warm accent on CTA */
+const FLOATING_BAR_BG = '#1e293b';
+const VARIANT_SEGMENT_MAX = 4;
 const shadowMd = shadows.md;
 const shadowSm = shadows.sm;
 const shadowAccent = shadows.accent(ACCENT);
-
-const FOOD_LIST_INITIAL_NUM = 12;
-const FOOD_LIST_WINDOW_SIZE = 8;
-const FOOD_LIST_MAX_BATCH = 8;
-/** Cap stagger so long menus don’t queue hundreds of delayed layout animations. */
-const FOOD_CARD_ENTER_STAGGER_CAP = 14;
 
 function coercePrice(value: unknown, fallback = 0): number {
   if (typeof value === 'number' && Number.isFinite(value)) return value;
@@ -73,67 +92,8 @@ function coercePrice(value: unknown, fallback = 0): number {
   return Number.isFinite(n) ? n : fallback;
 }
 
-function firstWord(name: string): string {
-  const word = name.trim().split(/\s+/)[0];
-  return word ? word.charAt(0).toUpperCase() + word.slice(1).toLowerCase() : name;
-}
-
-const FoodCard = React.memo(function FoodCard({
-  food,
-  onAdd,
-  index = 0,
-}: {
-  food: FoodItem;
-  onAdd: (f: FoodItem) => void;
-  index?: number;
-}) {
-  const [imageError, setImageError] = useState(false);
-  const hasImage = Boolean(food.item_image_local?.trim()) && !imageError;
-  const imageUri = hasImage
-    ? (food.item_image_local!.startsWith('file') ? food.item_image_local! : `file://${food.item_image_local!}`)
-    : null;
-  const placeholderText = firstWord(food.item_name);
-  const showImage = Boolean(imageUri);
-
-  return (
-    <Animated.View
-      entering={FadeInDown.delay(Math.min(index, FOOD_CARD_ENTER_STAGGER_CAP) * 28)
-        .duration(260)
-        .springify()
-        .damping(18)}
-      style={styles.foodCardOuter}
-    >
-      <PressableScale activeScale={0.97} style={styles.foodCard} onPress={() => onAdd(food)}>
-        <View style={styles.foodCardImageWrap}>
-          {showImage ? (
-            <Image
-              source={{ uri: imageUri! }}
-              style={StyleSheet.absoluteFill}
-              resizeMode="cover"
-              fadeDuration={Platform.OS === 'android' ? 0 : undefined}
-              onError={() => setImageError(true)}
-            />
-          ) : null}
-          <View style={[styles.foodCardPlaceholder, showImage && styles.foodCardPlaceholderHidden]}>
-            <Text style={styles.foodCardPlaceholderText} allowFontScaling={false}>
-              {placeholderText}
-            </Text>
-          </View>
-          <View style={styles.foodCardPriceBadge}>
-            <Text style={styles.foodCardPriceText}>${food.price.toFixed(2)}</Text>
-          </View>
-        </View>
-        <View style={styles.foodCardContent}>
-          <Text style={styles.foodCardName} numberOfLines={2}>
-            {food.item_name}
-          </Text>
-        </View>
-      </PressableScale>
-    </Animated.View>
-  );
-});
-
 export default function POSScreen() {
+  const isFocused = useIsFocused();
   const { auth } = useAuth();
   const {
     posSession,
@@ -161,10 +121,26 @@ export default function POSScreen() {
   } = posSession;
   const insets = useSafeAreaInsets();
   const { height: screenHeight } = useWindowDimensions();
-  const { numColumns, cartSheetHeightRatio, horizontalPadding, maxContentWidth, isTablet } = useResponsive();
+  const {
+    numColumns,
+    cartSheetHeightRatio,
+    horizontalPadding,
+    maxContentWidth,
+    isTablet,
+    isLargeTablet,
+  } = useResponsive();
   const { categories, items, modifiers } = useMasterData();
   const [category, setCategory] = useState('All');
   const [search, setSearch] = useState('');
+  const [searchFocused, setSearchFocused] = useState(false);
+  const [searchExpanded, setSearchExpanded] = useState(true);
+  const [categoriesExpanded, setCategoriesExpanded] = useState(true);
+  const [orderTypeSectionExpanded, setOrderTypeSectionExpanded] = useState(true);
+  const [contextSectionExpanded, setContextSectionExpanded] = useState(true);
+  /** When false, order type / context / search / category rows are not rendered (max menu space). */
+  const [posChromeStackVisible, setPosChromeStackVisible] = useState(false);
+  const searchInputRef = useRef<TextInput | null>(null);
+  const wasSearchCollapsedRef = useRef(false);
   const [showPlaceOrder, setShowPlaceOrder] = useState(false);
   const [showOrderPlacedToast, setShowOrderPlacedToast] = useState(false);
   const [showCartSheet, setShowCartSheet] = useState(false);
@@ -172,6 +148,10 @@ export default function POSScreen() {
   const [notesDraft, setNotesDraft] = useState('');
   const prevCartSheetOpen = useRef(false);
   const [modifiersCartIndex, setModifiersCartIndex] = useState<number | null>(null);
+  const [variantPickFood, setVariantPickFood] = useState<FoodItem | null>(null);
+  const [variantSelections, setVariantSelections] = useState<Record<string, string>>({});
+  const [variantSheetQty, setVariantSheetQty] = useState(1);
+  const [variantHeroImageFailed, setVariantHeroImageFailed] = useState(false);
   const [tables, setTables] = useState<TableItem[]>([]);
   const [selectedTable, setSelectedTable] = useState<TableItem | null>(null);
   const [tableDropdownOpen, setTableDropdownOpen] = useState(false);
@@ -180,7 +160,25 @@ export default function POSScreen() {
   const [selectedCustomer, setSelectedCustomer] = useState<CustomerItem | null>(null);
   const [customerDropdownOpen, setCustomerDropdownOpen] = useState(false);
   const [customersLoading, setCustomersLoading] = useState(false);
+  /** After table/order context is set, require an explicit category pick (same flow as table gate). */
+  const [categoryGateConfirmed, setCategoryGateConfirmed] = useState(false);
+  /** Pickup/delivery: step 1 is table (or skip); step 2 is category — never show category gate first. */
+  const [carryoutTableGatePassed, setCarryoutTableGatePassed] = useState(false);
+  /** After "Pickup or delivery" from dine-in gate, go straight to category (skip carryout step 1). */
+  const skipCarryoutTableGateAfterSwitchRef = useRef(false);
   const listRef = useRef<FlatList<FoodItem> | null>(null);
+  const addToastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [addToastLabel, setAddToastLabel] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (orderType !== 'DINE_IN' && skipCarryoutTableGateAfterSwitchRef.current) {
+      skipCarryoutTableGateAfterSwitchRef.current = false;
+      setCarryoutTableGatePassed(true);
+      setCategoryGateConfirmed(false);
+      return;
+    }
+    setCarryoutTableGatePassed(false);
+  }, [orderType]);
 
   useEffect(() => {
     if (orderType === 'DINE_IN') {
@@ -188,10 +186,18 @@ export default function POSScreen() {
       getTables(storeConfig.tablesApiBase)
         .then(setTables)
         .finally(() => setTablesLoading(false));
+      return;
+    }
+    if (!carryoutTableGatePassed && isFocused) {
+      setTablesLoading(true);
+      getTables(storeConfig.tablesApiBase)
+        .then(setTables)
+        .finally(() => setTablesLoading(false));
     } else {
       setSelectedTable(null);
+      setTableDropdownOpen(false);
     }
-  }, [orderType]);
+  }, [orderType, carryoutTableGatePassed, isFocused]);
 
   useEffect(() => {
     if (!tableNumber) {
@@ -218,18 +224,35 @@ export default function POSScreen() {
     setSelectedCustomer(matched);
   }, [customers, customerName]);
 
-  /** Use current menu/modifier prices so totals update in real time and survive bad persisted cart prices. */
+  useEffect(() => {
+    setCategoryGateConfirmed(false);
+  }, [tableNumber, orderType]);
+
+  const posCurrency = useMemo(
+    () =>
+      items.find((i) => i.pricesByChannel?.length)?.pricesByChannel?.[0]?.currency ??
+      'BDT',
+    [items],
+  );
+
+  const fmtMoney = useCallback(
+    (n: number) => formatMenuMoney(n, posCurrency),
+    [posCurrency],
+  );
+
+  /** Use current menu/modifier prices; base unit follows order type (dine-in vs pickup/delivery). */
   const cartPriced = useMemo(() => {
     return cart.map((c) => {
       const liveFood = items.find((i) => i.id === c.food.id);
-      const food = liveFood
+      const merged = liveFood
         ? {
             ...c.food,
             ...liveFood,
             item_image_local: c.food.item_image_local ?? liveFood.item_image_local ?? null,
-            price: coercePrice(liveFood.price, coercePrice(c.food.price, 0)),
           }
-        : { ...c.food, price: coercePrice(c.food.price, 0) };
+        : { ...c.food };
+      const unitBase = amountForChannel(merged, orderType);
+      const food = { ...merged, price: unitBase };
 
       const mods = (c.modifiers ?? []).map((m) => {
         const live = modifiers.find((x) => x.id === m.id);
@@ -243,7 +266,7 @@ export default function POSScreen() {
       });
       return { ...c, food, modifiers: mods.length ? mods : undefined };
     });
-  }, [cart, items, modifiers]);
+  }, [cart, items, modifiers, orderType]);
 
   const lineTotal = useCallback((c: CartItem) => {
     const base = coercePrice(c.food.price, 0) * c.qty;
@@ -281,7 +304,7 @@ export default function POSScreen() {
   }, [showCartSheet, orderNotes]);
 
   const closeCartSheet = useCallback(() => {
-    void setOrderNotes(notesDraft);
+    setOrderNotes(notesDraft).catch(() => {});
     sheetOpen.value = withSpring(
       0,
       {
@@ -317,7 +340,18 @@ export default function POSScreen() {
     }
   }, [modifiersCartIndex, cart.length]);
 
+  useFocusEffect(
+    useCallback(() => {
+      return () => {
+        setTableDropdownOpen(false);
+        setCustomerDropdownOpen(false);
+      };
+    }, [])
+  );
+
   const categoryLabel = category === 'All' ? null : (categories.find((c) => c.id === category)?.label ?? '');
+  const orderTypeLabel = ORDER_TYPES.find((t) => t.id === orderType)?.label ?? '';
+
   const filteredItems = useMemo(() => {
     let list =
       category === 'All'
@@ -334,17 +368,180 @@ export default function POSScreen() {
     return list.filter((f) => f.status);
   }, [category, categoryLabel, items, search]);
 
+  const menuListHeader = useMemo(
+    () => (
+      <View style={styles.menuSectionHeader}>
+        <View style={styles.menuSectionTitleRow}>
+          <Text style={styles.menuSectionTitle}>Menu</Text>
+          <View style={styles.menuCountPill}>
+            <Text style={styles.menuCountPillText}>
+              {filteredItems.length}
+            </Text>
+          </View>
+        </View>
+        <Text style={styles.menuSectionMeta} numberOfLines={2}>
+          {category === 'All' ? 'All categories' : (categoryLabel ?? 'Category')}
+          {' · '}
+          {orderTypeLabel}
+          {search.trim().length > 0 ? ` · “${search.trim()}”` : ''}
+        </Text>
+      </View>
+    ),
+    [filteredItems.length, category, categoryLabel, orderTypeLabel, search],
+  );
+
+  const cartItemQtyTotal = useMemo(() => cart.reduce((s, c) => s + c.qty, 0), [cart]);
   const subtotal = getSubtotal(cartPriced);
   const total = getTotal(cartPriced, discountPercent, chargePercent, taxPercent);
   const selectedTableLabel = selectedTable ? `Table ${selectedTable.name ?? selectedTable.number}` : (tableNumber ? `Table ${tableNumber}` : '');
   const selectedCustomerLabel = selectedCustomer ? `${selectedCustomer.name}${selectedCustomer.phone ? ` · ${selectedCustomer.phone}` : ''}` : customerName;
 
-  const handleAddItem = useCallback(
-    (food: FoodItem) => {
-      addToCart({ food, qty: 1 });
+  const contextCollapsedSummary = useMemo(() => {
+    const tablePart =
+      orderType !== 'DINE_IN'
+        ? orderTypeLabel
+        : tablesLoading
+          ? 'Loading…'
+          : selectedTableLabel || 'Choose table';
+    const customerPart = customersLoading ? 'Loading…' : selectedCustomerLabel || 'Walk-in';
+    return `${tablePart} · ${customerPart}`;
+  }, [
+    orderType,
+    orderTypeLabel,
+    tablesLoading,
+    selectedTableLabel,
+    customersLoading,
+    selectedCustomerLabel,
+  ]);
+
+  /** Top bar: `Dine in -> Table 2 -> Name` (compact order context). */
+  const posChromeContextTrail = useMemo(() => {
+    const typePart =
+      orderType === 'DINE_IN' ? 'Dine in' : orderType === 'TAKEAWAY' ? 'Pick up' : 'Delivery';
+    const tablePart =
+      orderType !== 'DINE_IN'
+        ? '—'
+        : tablesLoading
+          ? '…'
+          : selectedTableLabel || 'Choose table';
+    const nameOnly = selectedCustomer?.name?.trim() || customerName?.trim() || '';
+    const customerPart = customersLoading ? '…' : nameOnly || 'Walk-in';
+    return `${typePart} -> ${tablePart} -> ${customerPart}`;
+  }, [
+    orderType,
+    tablesLoading,
+    selectedTableLabel,
+    customersLoading,
+    selectedCustomer,
+    customerName,
+  ]);
+  /** Two-step gate for every order type: (1) table / table-or-skip, (2) category. */
+  const dineInNeedsTable = orderType === 'DINE_IN' && !(tableNumber?.trim());
+  const carryoutNeedsTableStep = orderType !== 'DINE_IN' && !carryoutTableGatePassed;
+  const atTableGateStep = dineInNeedsTable || carryoutNeedsTableStep;
+  const showPosGate = isFocused && (atTableGateStep || !categoryGateConfirmed);
+  const gatePhase: 'table' | 'category' = atTableGateStep ? 'table' : 'category';
+
+  const passCarryoutTableGate = useCallback(() => {
+    setCarryoutTableGatePassed(true);
+    setCategoryGateConfirmed(false);
+  }, []);
+
+  const pulseAddFeedback = useCallback((dishName: string) => {
+    const label = dishName.length > 32 ? `${dishName.slice(0, 30)}…` : dishName;
+    if (addToastTimerRef.current) clearTimeout(addToastTimerRef.current);
+    setAddToastLabel(label);
+    addToastTimerRef.current = setTimeout(() => {
+      setAddToastLabel(null);
+      addToastTimerRef.current = null;
+    }, 1600);
+    if (Platform.OS === 'android') {
+      Vibration.vibrate(14);
+    }
+  }, []);
+
+  useEffect(
+    () => () => {
+      if (addToastTimerRef.current) clearTimeout(addToastTimerRef.current);
     },
-    [addToCart]
+    [],
   );
+
+  /** Scroll menu to top when filters change so the new list is always in view. */
+  useEffect(() => {
+    const id = requestAnimationFrame(() => {
+      listRef.current?.scrollToOffset({ offset: 0, animated: true });
+    });
+    return () => cancelAnimationFrame(id);
+  }, [category, search]);
+
+  useEffect(() => {
+    if (!searchExpanded) {
+      wasSearchCollapsedRef.current = true;
+      return;
+    }
+    if (!wasSearchCollapsedRef.current) return;
+    wasSearchCollapsedRef.current = false;
+    const id = requestAnimationFrame(() => {
+      searchInputRef.current?.focus();
+    });
+    return () => cancelAnimationFrame(id);
+  }, [searchExpanded]);
+
+  const openCategoriesPanel = useCallback(() => {
+    setCategoriesExpanded(true);
+    requestAnimationFrame(() => {
+      listRef.current?.scrollToOffset({ offset: 0, animated: true });
+    });
+  }, []);
+
+  const toggleAllPosChrome = useCallback(() => {
+    setPosChromeStackVisible((visible) => {
+      if (visible) {
+        searchInputRef.current?.blur();
+        setTableDropdownOpen(false);
+        setCustomerDropdownOpen(false);
+      }
+      return !visible;
+    });
+  }, []);
+
+  /** One tap: add immediately using catalog `defaultOptionId` (or first option). */
+  const quickAddFood = useCallback(
+    (food: FoodItem) => {
+      const mods = defaultModifiersForVariantGroups(food.variantGroups);
+      if (mods.length > 0) {
+        addToCart({ food, qty: 1, modifiers: mods });
+      } else {
+        addToCart({ food, qty: 1 });
+      }
+      pulseAddFeedback(food.item_name);
+    },
+    [addToCart, pulseAddFeedback],
+  );
+
+  /** Long-press on item: pick beef/mutton etc. */
+  const openVariantOptions = useCallback((food: FoodItem) => {
+    if (!foodHasVariantGroups(food)) return;
+    setVariantSelections(initialVariantSelectionsFromGroups(food.variantGroups));
+    setVariantSheetQty(1);
+    setVariantHeroImageFailed(false);
+    setVariantPickFood(food);
+  }, []);
+
+  const confirmVariantPick = useCallback(() => {
+    if (!variantPickFood) return;
+    const mods: Modifier[] = [];
+    for (const g of variantPickFood.variantGroups ?? []) {
+      const optId = variantSelections[g.id];
+      const opt = g.options.find((o) => o.id === optId);
+      if (opt) mods.push({ id: opt.id, name: opt.name, price: opt.priceDelta });
+    }
+    const name = variantPickFood.item_name;
+    addToCart({ food: variantPickFood, qty: variantSheetQty, modifiers: mods });
+    setVariantPickFood(null);
+    pulseAddFeedback(name);
+  }, [variantPickFood, variantSelections, variantSheetQty, addToCart, pulseAddFeedback]);
 
   const handlePlaceOrder = () => {
     if (cart.length === 0) {
@@ -357,13 +554,8 @@ export default function POSScreen() {
   const handleConfirmAndPay = () => {
     const needsTable = orderType === 'DINE_IN';
     const hasTable = !!(tableNumber?.trim());
-    const hasCustomer = !!(customerName?.trim());
     if (needsTable && !hasTable) {
-      Alert.alert('Required field', 'Please select a table before saving the order.');
-      return;
-    }
-    if (!hasCustomer) {
-      Alert.alert('Required field', 'Please select a customer before saving the order.');
+      Alert.alert('Required field', 'Please select a table number before saving the order.');
       return;
     }
     const enabled: PaymentMethod[] = storeConfig.enabledPaymentMethods ?? ['CASH'];
@@ -401,13 +593,69 @@ export default function POSScreen() {
     setShowOrderPlacedToast(true);
   };
 
+  const variantSheetUnitPrice = useMemo(() => {
+    if (!variantPickFood) return 0;
+    const base = amountForChannel(variantPickFood, orderType);
+    let delta = 0;
+    for (const g of variantPickFood.variantGroups ?? []) {
+      const sel = variantSelections[g.id];
+      const opt = g.options.find((o) => o.id === sel);
+      if (opt) delta += opt.priceDelta;
+    }
+    return base + delta;
+  }, [variantPickFood, variantSelections, orderType]);
+
+  const variantSheetLineTotal = useMemo(
+    () => variantSheetUnitPrice * variantSheetQty,
+    [variantSheetUnitPrice, variantSheetQty],
+  );
+
+  const variantHeroUri = useMemo(() => {
+    if (!variantPickFood || variantHeroImageFailed) return null;
+    const p = variantPickFood.item_image_local?.trim();
+    if (!p) return null;
+    return p.startsWith('file') ? p : `file://${p}`;
+  }, [variantPickFood, variantHeroImageFailed]);
+
+  const variantHeroMonogram = useMemo(() => {
+    const w = variantPickFood?.item_name?.trim().split(/\s+/)[0];
+    return w ? w.charAt(0).toUpperCase() : '?';
+  }, [variantPickFood?.item_name]);
+
   const renderFoodItem = useCallback(
-    ({ item, index }: { item: FoodItem; index: number }) => (
-      <View style={[styles.foodCardWrapper, { width: `${100 / numColumns}%` }]}>
-        <FoodCard food={item} onAdd={handleAddItem} index={index} />
-      </View>
-    ),
-    [handleAddItem, numColumns]
+    ({ item, index }: { item: FoodItem; index: number }) => {
+      const cur = item.pricesByChannel?.[0]?.currency ?? posCurrency;
+      const base = amountForChannel(item, orderType);
+      const hasVar = foodHasVariantGroups(item);
+      const defDelta = defaultVariantPriceDeltaSum(item.variantGroups);
+      const priceLabel = formatMenuMoney(base + defDelta, cur);
+      const span = variantDeltaRange(item.variantGroups);
+      const rMin = base + span.min;
+      const rMax = base + span.max;
+      const rangeLabel =
+        hasVar && rMax > rMin + 0.01
+          ? `${formatMenuMoney(rMin, cur)} – ${formatMenuMoney(rMax, cur)}`
+          : undefined;
+      const defaultVariantSummary = hasVar
+        ? defaultModifiersForVariantGroups(item.variantGroups)
+            .map((m) => m.name)
+            .join(' · ')
+        : undefined;
+      return (
+        <View style={[styles.foodCardWrapper, { width: `${100 / numColumns}%` }]}>
+          <PosFoodCard
+            food={item}
+            priceLabel={priceLabel}
+            rangeLabel={rangeLabel}
+            defaultVariantSummary={defaultVariantSummary}
+            onQuickAdd={quickAddFood}
+            onOpenOptions={hasVar ? openVariantOptions : undefined}
+            index={index}
+          />
+        </View>
+      );
+    },
+    [quickAddFood, openVariantOptions, numColumns, orderType, posCurrency],
   );
 
   const keyExtractor = useCallback((item: FoodItem) => item.id, []);
@@ -449,7 +697,7 @@ export default function POSScreen() {
             </TouchableOpacity>
           </View>
           <Text style={styles.cartLineTotal}>
-            ${lineTotal(item).toFixed(2)}
+            {fmtMoney(lineTotal(item))}
           </Text>
         </View>
         <View style={styles.cartRowActions}>
@@ -477,8 +725,316 @@ export default function POSScreen() {
     );
   };
 
+  const renderTableGateItem = useCallback(
+    ({ item, index }: ListRenderItemInfo<TableItem>) => (
+      <View style={styles.tableGateCell}>
+        <Animated.View
+          entering={FadeInDown.delay(Math.min(index * 42, 320)).duration(340).springify().damping(17)}
+          style={styles.tableGateTileWrap}
+        >
+          <PressableScale
+            style={styles.tableGateTile}
+            activeScale={0.96}
+            onPress={() => {
+              if (orderType !== 'DINE_IN') {
+                setOrderType('DINE_IN').catch(() => {});
+              }
+              setTableNumber(item.number);
+              setSelectedTable(item);
+            }}
+          >
+            <View style={styles.tableGateTileIconRow}>
+              <View style={styles.tableGateTileIconBg}>
+                <Icon name="grid" size={18} color={ACCENT} />
+              </View>
+            </View>
+            <Text style={styles.tableGateTileNumber} numberOfLines={1}>
+              {item.name ?? item.number}
+            </Text>
+            <Text style={styles.tableGateTileCaption}>Table number</Text>
+          </PressableScale>
+        </Animated.View>
+      </View>
+    ),
+    [orderType, setOrderType, setTableNumber]
+  );
+
+  const tableGateKeyExtractor = useCallback((item: TableItem) => item.id, []);
+
+  type CategoryRow = { id: string; label: string };
+
+  const renderCategoryGateItem = useCallback(
+    ({ item, index }: ListRenderItemInfo<CategoryRow>) => {
+      const emoji = CATEGORY_EMOJI[item.id] ?? '🍽️';
+      return (
+        <View style={styles.tableGateCell}>
+          <Animated.View
+            entering={FadeInDown.delay(Math.min(index * 42, 320)).duration(340).springify().damping(17)}
+            style={styles.tableGateTileWrap}
+          >
+            <PressableScale
+              style={styles.tableGateTile}
+              activeScale={0.96}
+              onPress={() => {
+                setCategory(item.id);
+                setCategoryGateConfirmed(true);
+              }}
+            >
+              <View style={styles.tableGateTileIconRow}>
+                <View style={styles.tableGateTileIconBg}>
+                  <Text style={styles.categoryGateEmoji} allowFontScaling={false}>
+                    {emoji}
+                  </Text>
+                </View>
+              </View>
+              <Text style={styles.tableGateTileNumber} numberOfLines={2}>
+                {item.label}
+              </Text>
+              <Text style={styles.tableGateTileCaption}>
+                {item.id === 'All' ? 'Full menu' : 'Food category'}
+              </Text>
+            </PressableScale>
+          </Animated.View>
+        </View>
+      );
+    },
+    []
+  );
+
+  const categoryGateKeyExtractor = useCallback((item: CategoryRow) => item.id, []);
+
+  const categoryGridColumns = isLargeTablet ? 6 : isTablet ? 5 : 4;
+
   return (
     <View style={[styles.container, isTablet && { alignItems: 'center', maxWidth: maxContentWidth, width: '100%' }]}>
+      <Modal
+        visible={showPosGate}
+        animationType="fade"
+        transparent
+        statusBarTranslucent
+        presentationStyle="overFullScreen"
+      >
+        <View style={[styles.tableGateRoot, { paddingTop: insets.top + 10, paddingBottom: insets.bottom + 12 }]}>
+          <Animated.View
+            key={gatePhase}
+            entering={FadeInDown.duration(400).springify().damping(17)}
+            style={styles.tableGateCard}
+          >
+            <View style={StyleSheet.absoluteFill} pointerEvents="none">
+              <View style={styles.tableGateGlowTop} />
+              <View style={styles.tableGateGlowBlob} />
+            </View>
+
+            <View style={styles.gateStepsRow}>
+              <View style={styles.gateStepsTrack}>
+                <View style={[styles.gateStepDot, gatePhase === 'table' && styles.gateStepDotActive]} />
+                <View
+                  style={[
+                    styles.gateStepLine,
+                    gatePhase === 'category' && styles.gateStepLineActive,
+                  ]}
+                />
+                <View style={[styles.gateStepDot, gatePhase === 'category' && styles.gateStepDotActive]} />
+              </View>
+              <Text style={styles.gateStepsLabel}>
+                {gatePhase === 'table'
+                  ? 'Step 1 of 2 · Table number'
+                  : 'Step 2 of 2 · Food category'}
+              </Text>
+            </View>
+
+            {gatePhase === 'table' ? (
+              orderType === 'DINE_IN' ? (
+              <>
+                <View style={styles.tableGateHero}>
+                  <View style={styles.tableGatePill}>
+                    <View style={styles.tableGatePillDot} />
+                    <Text style={styles.tableGatePillText}>Dine-in</Text>
+                  </View>
+                  <View style={styles.tableGateHeroIconWrap}>
+                    <View style={styles.tableGateHeroRingOuter}>
+                      <View style={styles.tableGateHeroRing}>
+                        <Icon name="coffee" size={28} color="#fff" />
+                      </View>
+                    </View>
+                  </View>
+                  <Text style={styles.tableGateTitle}>Choose table number</Text>
+                  <Text style={styles.tableGateSubtitle}>
+                    Next you’ll choose a food category, then add items. You can change table number or category
+                    anytime from the bar above.
+                  </Text>
+                </View>
+
+                {tablesLoading ? (
+                  <View style={styles.tableGateLoading}>
+                    <ActivityIndicator size="large" color={ACCENT} />
+                    <Text style={styles.tableGateLoadingText}>Loading floor plan…</Text>
+                  </View>
+                ) : tables.length === 0 ? (
+                  <View style={styles.tableGateEmpty}>
+                    <Icon name="wifi-off" size={36} color="rgba(148, 163, 184, 0.7)" style={styles.tableGateEmptyIcon} />
+                    <Text style={styles.tableGateEmptyText}>
+                      No tables available. Check your connection or use pickup below.
+                    </Text>
+                  </View>
+                ) : (
+                  <FlatList
+                    data={tables}
+                    keyExtractor={tableGateKeyExtractor}
+                    renderItem={renderTableGateItem}
+                    numColumns={2}
+                    scrollEnabled={tables.length > 6}
+                    style={styles.tableGateList}
+                    contentContainerStyle={styles.tableGateListContent}
+                    columnWrapperStyle={styles.tableGateRow}
+                    keyboardShouldPersistTaps="handled"
+                    showsVerticalScrollIndicator={false}
+                  />
+                )}
+
+                <View style={styles.tableGateDivider} />
+
+                <TouchableOpacity
+                  style={styles.tableGateAlt}
+                  onPress={() => {
+                    skipCarryoutTableGateAfterSwitchRef.current = true;
+                    setOrderType('TAKEAWAY').catch(() => {});
+                  }}
+                  activeOpacity={0.82}
+                >
+                  <View style={styles.tableGateAltInner}>
+                    <View style={styles.tableGateAltIconWrap}>
+                      <Icon name="package" size={20} color={ACCENT} />
+                    </View>
+                    <View style={styles.tableGateAltTextCol}>
+                      <Text style={styles.tableGateAltTitle}>Pickup or delivery</Text>
+                      <Text style={styles.tableGateAltSub}>No table — go to food categories (step 2)</Text>
+                    </View>
+                    <Icon name="chevron-right" size={22} color="rgba(148, 163, 184, 0.9)" />
+                  </View>
+                </TouchableOpacity>
+              </>
+              ) : (
+              <>
+                <View style={styles.tableGateHero}>
+                  <View style={styles.tableGatePill}>
+                    <View style={styles.tableGatePillDot} />
+                    <Text style={styles.tableGatePillText}>
+                      {orderType === 'DELIVERY' ? 'Delivery' : 'Pick up'}
+                    </Text>
+                  </View>
+                  <View style={styles.tableGateHeroIconWrap}>
+                    <View style={styles.tableGateHeroRingOuter}>
+                      <View style={styles.tableGateHeroRing}>
+                        <Icon name="grid" size={28} color="#fff" />
+                      </View>
+                    </View>
+                  </View>
+                  <Text style={styles.tableGateTitle}>Choose table number</Text>
+                  <Text style={styles.tableGateSubtitle}>
+                    Tap a table if this order is for the dining room (switches to Dine in), or continue without a table
+                    to pick your category next.
+                  </Text>
+                </View>
+
+                {tablesLoading ? (
+                  <View style={styles.tableGateLoading}>
+                    <ActivityIndicator size="large" color={ACCENT} />
+                    <Text style={styles.tableGateLoadingText}>Loading tables…</Text>
+                  </View>
+                ) : tables.length === 0 ? (
+                  <View style={styles.tableGateEmpty}>
+                    <Icon name="wifi-off" size={36} color="rgba(148, 163, 184, 0.7)" style={styles.tableGateEmptyIcon} />
+                    <Text style={styles.tableGateEmptyText}>
+                      No tables listed. Continue to categories or switch to Dine in later from the bar.
+                    </Text>
+                  </View>
+                ) : (
+                  <FlatList
+                    data={tables}
+                    keyExtractor={tableGateKeyExtractor}
+                    renderItem={renderTableGateItem}
+                    numColumns={2}
+                    scrollEnabled={tables.length > 6}
+                    style={styles.tableGateList}
+                    contentContainerStyle={styles.tableGateListContent}
+                    columnWrapperStyle={styles.tableGateRow}
+                    keyboardShouldPersistTaps="handled"
+                    showsVerticalScrollIndicator={false}
+                  />
+                )}
+
+                <View style={styles.tableGateDivider} />
+
+                <TouchableOpacity
+                  style={styles.tableGateAlt}
+                  onPress={passCarryoutTableGate}
+                  activeOpacity={0.82}
+                >
+                  <View style={styles.tableGateAltInner}>
+                    <View style={styles.tableGateAltIconWrap}>
+                      <Icon name="layers" size={20} color={ACCENT} />
+                    </View>
+                    <View style={styles.tableGateAltTextCol}>
+                      <Text style={styles.tableGateAltTitle}>Continue without table</Text>
+                      <Text style={styles.tableGateAltSub}>Step 2 · Choose food category</Text>
+                    </View>
+                    <Icon name="chevron-right" size={22} color="rgba(148, 163, 184, 0.9)" />
+                  </View>
+                </TouchableOpacity>
+              </>
+              )
+            ) : (
+              <>
+                <View style={styles.tableGateHero}>
+                  <View style={styles.tableGatePill}>
+                    <View style={styles.tableGatePillDot} />
+                    <Text style={styles.tableGatePillText}>Menu</Text>
+                  </View>
+                  <View style={styles.tableGateHeroIconWrap}>
+                    <View style={styles.tableGateHeroRingOuter}>
+                      <View style={styles.tableGateHeroRing}>
+                        <Icon name="layers" size={28} color="#fff" />
+                      </View>
+                    </View>
+                  </View>
+                  <Text style={styles.tableGateTitle}>Choose food category</Text>
+                  <Text style={styles.tableGateSubtitle}>
+                    {orderType === 'DINE_IN' && selectedTableLabel
+                      ? `${selectedTableLabel} · pick a section, then add items to the cart.`
+                      : 'Pick a section, then add items to the cart.'}
+                  </Text>
+                </View>
+
+                <FlatList
+                  data={categories}
+                  keyExtractor={categoryGateKeyExtractor}
+                  renderItem={renderCategoryGateItem}
+                  numColumns={2}
+                  scrollEnabled={categories.length > 6}
+                  style={styles.tableGateList}
+                  contentContainerStyle={styles.tableGateListContent}
+                  columnWrapperStyle={styles.tableGateRow}
+                  keyboardShouldPersistTaps="handled"
+                  showsVerticalScrollIndicator={false}
+                />
+
+                {orderType === 'DINE_IN' ? (
+                  <TouchableOpacity
+                    style={styles.gateChangeTableBtn}
+                    onPress={() => setTableNumber('')}
+                    activeOpacity={0.75}
+                  >
+                    <Icon name="arrow-left" size={18} color={ACCENT} />
+                    <Text style={styles.gateChangeTableText}>Change table number</Text>
+                  </TouchableOpacity>
+                ) : null}
+              </>
+            )}
+          </Animated.View>
+        </View>
+      </Modal>
+
       {showOrderPlacedToast && (
         <Animated.View
           entering={FadeInUp.duration(400).springify().damping(16)}
@@ -496,207 +1052,498 @@ export default function POSScreen() {
           </View>
         </Animated.View>
       )}
-      <View style={[styles.searchWrap, shadowSm, { marginHorizontal: horizontalPadding }]}>
-        <Icon name={FEATHER_ICONS.search} size={20} color={themeColors.textSubtle} style={styles.searchIcon} />
-        <TextInput
-          style={styles.search}
-          placeholder="Search items..."
-          placeholderTextColor={themeColors.textSubtle}
-          value={search}
-          onChangeText={setSearch}
-        />
-      </View>
-
-      <View style={[styles.categoryBar, shadowSm, { paddingHorizontal: horizontalPadding }]}>
-        <ScrollView
-          horizontal
-          showsHorizontalScrollIndicator={false}
-          contentContainerStyle={styles.categoryScrollContent}
+      <View style={[styles.posChromeBulkBar, { marginHorizontal: horizontalPadding, marginTop: spacing.sm }]}>
+        <TouchableOpacity
+          onPress={toggleAllPosChrome}
+          hitSlop={12}
+          style={styles.posChromeBulkToggle}
+          accessibilityLabel={posChromeStackVisible ? 'Hide all POS panels' : 'Show all POS panels'}
+          accessibilityRole="button"
         >
-          {categories.map((c, idx) => {
-            const emoji = CATEGORY_EMOJI[c.id] ?? '🍽️';
-            const isActive = category === c.id;
-            return (
-              <Animated.View
-                key={c.id}
-                entering={FadeInRight.delay(idx * 45).duration(260).springify().damping(18)}
-                style={styles.categoryPillWrap}
+          <Text style={styles.categoryHeaderActionText}>
+            {posChromeStackVisible ? 'Hide all' : 'Show all'}
+          </Text>
+          <Icon name={posChromeStackVisible ? 'chevron-up' : 'chevron-down'} size={16} color={ACCENT} />
+        </TouchableOpacity>
+        <Text
+          style={styles.posChromeBulkTrail}
+          numberOfLines={1}
+          ellipsizeMode="tail"
+        >
+          {posChromeContextTrail}
+        </Text>
+      </View>
+      {posChromeStackVisible ? (
+      <>
+      <View style={[styles.posChromeSection, { marginHorizontal: horizontalPadding }]}>
+        {orderTypeSectionExpanded ? (
+          <>
+            <View style={styles.posChromeHeader}>
+              <Text style={styles.posChromeHeaderTitle}>Order type</Text>
+              <TouchableOpacity
+                onPress={() => setOrderTypeSectionExpanded(false)}
+                hitSlop={12}
+                style={styles.categoryHeaderAction}
+                accessibilityLabel="Collapse order type"
+                accessibilityRole="button"
               >
+                <Text style={styles.categoryHeaderActionText}>Hide</Text>
+                <Icon name="chevron-up" size={16} color={ACCENT} />
+              </TouchableOpacity>
+            </View>
+            <View style={[styles.orderTypeRow, styles.posChromeInner]}>
+              {ORDER_TYPES.map((ot) => (
                 <PressableScale
+                  key={ot.id}
                   activeScale={0.97}
-                  style={[
-                    styles.categoryPill,
-                    isActive && styles.categoryPillActive,
-                  ]}
-                  onPress={() => setCategory(c.id)}
+                  style={[styles.orderTypeBtn, orderType === ot.id && styles.orderTypeBtnActive]}
+                  onPress={() => setOrderType(ot.id)}
                 >
-                  <Text style={styles.categoryPillEmoji} allowFontScaling={false}>
-                    {emoji}
+                  <Text style={styles.orderTypeEmoji} allowFontScaling={false}>
+                    {ORDER_TYPE_EMOJI[ot.id]}
                   </Text>
                   <Text
                     style={[
-                      styles.categoryPillLabel,
-                      isActive && styles.categoryPillLabelActive,
+                      styles.orderTypeLabel,
+                      orderType === ot.id && styles.orderTypeLabelActive,
                     ]}
-                    numberOfLines={1}
                   >
-                    {c.label}
+                    {ot.label}
                   </Text>
                 </PressableScale>
-              </Animated.View>
-            );
-          })}
-        </ScrollView>
-      </View>
-
-      <View style={[styles.orderTypeRow, { paddingHorizontal: horizontalPadding }]}>
-        {ORDER_TYPES.map((ot) => (
-          <PressableScale
-            key={ot.id}
-            activeScale={0.97}
-            style={[styles.orderTypeBtn, orderType === ot.id && styles.orderTypeBtnActive]}
-            onPress={() => setOrderType(ot.id)}
-          >
-            <Text style={styles.orderTypeEmoji} allowFontScaling={false}>
-              {ORDER_TYPE_EMOJI[ot.id]}
-            </Text>
-            <Text
-              style={[
-                styles.orderTypeLabel,
-                orderType === ot.id && styles.orderTypeLabelActive,
-              ]}
-            >
-              {ot.label}
-            </Text>
-          </PressableScale>
-        ))}
-      </View>
-
-      {orderType === 'DINE_IN' && (
-        <Animated.View entering={FadeIn.duration(200)} style={[styles.tableRow, { marginHorizontal: horizontalPadding }]}>
-          <Text style={styles.tableRowEmoji} allowFontScaling={false}>🪑</Text>
+              ))}
+            </View>
+          </>
+        ) : (
           <TouchableOpacity
-            style={styles.tableDropdown}
-            onPress={() => setTableDropdownOpen(true)}
-            activeOpacity={0.7}
+            style={styles.posChromeCollapsed}
+            onPress={() => setOrderTypeSectionExpanded(true)}
+            activeOpacity={0.75}
+            accessibilityLabel="Expand order type"
+            accessibilityRole="button"
           >
-            <Text style={tableNumber ? styles.tableDropdownText : styles.tableDropdownPlaceholder} numberOfLines={1}>
-              {tablesLoading ? 'Loading...' : selectedTableLabel || 'Select table'}
-            </Text>
-            <Icon name="chevron-down" size={20} color={themeColors.textMuted} />
+            <View style={styles.categoryCollapsedIconWrap}>
+              <Text style={styles.categoryCollapsedEmoji} allowFontScaling={false}>
+                {ORDER_TYPE_EMOJI[orderType]}
+              </Text>
+            </View>
+            <View style={styles.categoryCollapsedTextCol}>
+              <Text style={styles.categoryCollapsedKicker}>Order type</Text>
+              <Text style={styles.categoryCollapsedValue} numberOfLines={1}>
+                {orderTypeLabel}
+              </Text>
+            </View>
+            <Icon name="chevron-down" size={16} color={themeColors.textMuted} />
           </TouchableOpacity>
-          <Modal
-            visible={tableDropdownOpen}
-            transparent
-            animationType="fade"
-            onRequestClose={() => setTableDropdownOpen(false)}
-          >
-            <View style={styles.tableModalBackdrop}>
-              <Pressable style={StyleSheet.absoluteFill} onPress={() => setTableDropdownOpen(false)} />
-              <View style={styles.tableModalContent} pointerEvents="box-none">
-                <View style={styles.tableModalHeader}>
-                  <Text style={styles.tableModalTitle}>Select table</Text>
-                  <TouchableOpacity onPress={() => setTableDropdownOpen(false)} hitSlop={12}>
-                    <Icon name="x" size={24} color={themeColors.textMuted} />
+        )}
+      </View>
+
+      <View style={[styles.posChromeSection, { marginHorizontal: horizontalPadding }]}>
+        {contextSectionExpanded ? (
+          <>
+            <View style={styles.posChromeHeader}>
+              <Text style={styles.posChromeHeaderTitle}>Table & customer</Text>
+              <TouchableOpacity
+                onPress={() => setContextSectionExpanded(false)}
+                hitSlop={12}
+                style={styles.categoryHeaderAction}
+                accessibilityLabel="Collapse table and customer"
+                accessibilityRole="button"
+              >
+                <Text style={styles.categoryHeaderActionText}>Hide</Text>
+                <Icon name="chevron-up" size={16} color={ACCENT} />
+              </TouchableOpacity>
+            </View>
+            <Animated.View entering={FadeIn.duration(200)} style={[styles.contextCard, styles.posChromeInner]}>
+              <View style={styles.contextRowCombined}>
+                <View
+                  style={[
+                    styles.contextCell,
+                    orderType !== 'DINE_IN' && styles.contextCellMuted,
+                  ]}
+                >
+                  <View style={styles.contextIconBubble}>
+                    <Icon name="grid" size={18} color={orderType === 'DINE_IN' ? ACCENT : themeColors.textSubtle} />
+                  </View>
+                  <TouchableOpacity
+                    style={styles.tableDropdown}
+                    onPress={() => {
+                      if (orderType !== 'DINE_IN') {
+                        setOrderType('DINE_IN').catch(() => {});
+                        return;
+                      }
+                      setTableDropdownOpen(true);
+                    }}
+                    activeOpacity={0.7}
+                  >
+                    <View style={styles.contextLabelCol}>
+                      <Text style={styles.contextFieldLabel}>Table</Text>
+                      <Text
+                        style={
+                          orderType === 'DINE_IN' && tableNumber
+                            ? styles.tableDropdownText
+                            : styles.tableDropdownPlaceholder
+                        }
+                        numberOfLines={1}
+                      >
+                        {orderType !== 'DINE_IN'
+                          ? 'Tap · Dine in'
+                          : tablesLoading
+                            ? 'Loading…'
+                            : selectedTableLabel || 'Choose'}
+                      </Text>
+                    </View>
+                    <Icon name="chevron-down" size={16} color={themeColors.textMuted} />
                   </TouchableOpacity>
                 </View>
-                <ScrollView style={styles.tableModalScroll} keyboardShouldPersistTaps="handled">
+                <View style={styles.contextVerticalRule} />
+                <View style={styles.contextCell}>
+                  <View style={styles.contextIconBubble}>
+                    <Icon name="user" size={18} color={ACCENT} />
+                  </View>
                   <TouchableOpacity
-                    style={[styles.tableOption, !tableNumber && styles.tableOptionActive]}
-                    onPress={() => {
-                      setTableNumber('');
-                      setTableDropdownOpen(false);
-                    }}
+                    style={styles.tableDropdown}
+                    onPress={() => setCustomerDropdownOpen(true)}
+                    activeOpacity={0.7}
                   >
-                    <Text style={[styles.tableOptionText, !tableNumber && styles.tableOptionTextActive]}>No table</Text>
-                  </TouchableOpacity>
-                  {tables.map((t) => (
-                    <TouchableOpacity
-                      key={t.id}
-                      style={[styles.tableOption, tableNumber === t.number && styles.tableOptionActive]}
-                      onPress={() => {
-                        setTableNumber(t.number);
-                        setSelectedTable(t);
-                        setTableDropdownOpen(false);
-                      }}
-                    >
-                      <Text style={[styles.tableOptionText, tableNumber === t.number && styles.tableOptionTextActive]}>
-                        Table {t.name ?? t.number}
+                    <View style={styles.contextLabelCol}>
+                      <Text style={styles.contextFieldLabel}>Customer</Text>
+                      <Text
+                        style={customerName ? styles.tableDropdownText : styles.tableDropdownPlaceholder}
+                        numberOfLines={1}
+                      >
+                        {customersLoading ? 'Loading…' : selectedCustomerLabel || 'Walk-in'}
                       </Text>
-                    </TouchableOpacity>
-                  ))}
-                </ScrollView>
+                    </View>
+                    <Icon name="chevron-down" size={16} color={themeColors.textMuted} />
+                  </TouchableOpacity>
+                </View>
               </View>
+            </Animated.View>
+          </>
+        ) : (
+          <TouchableOpacity
+            style={styles.posChromeCollapsed}
+            onPress={() => setContextSectionExpanded(true)}
+            activeOpacity={0.75}
+            accessibilityLabel="Expand table and customer"
+            accessibilityRole="button"
+          >
+            <View style={styles.categoryCollapsedIconWrap}>
+              <Icon name="users" size={20} color={ACCENT} />
             </View>
-          </Modal>
-        </Animated.View>
-      )}
+            <View style={styles.categoryCollapsedTextCol}>
+              <Text style={styles.categoryCollapsedKicker}>Table & customer</Text>
+              <Text style={styles.categoryCollapsedValue} numberOfLines={1}>
+                {contextCollapsedSummary}
+              </Text>
+            </View>
+            <Icon name="chevron-down" size={16} color={themeColors.textMuted} />
+          </TouchableOpacity>
+        )}
+      </View>
 
-      <Animated.View entering={FadeIn.duration(200)} style={[styles.tableRow, { marginHorizontal: horizontalPadding }]}>
-        <Text style={styles.tableRowEmoji} allowFontScaling={false}>👤</Text>
-        <TouchableOpacity
-          style={styles.tableDropdown}
-          onPress={() => setCustomerDropdownOpen(true)}
-          activeOpacity={0.7}
-        >
-          <Text style={customerName ? styles.tableDropdownText : styles.tableDropdownPlaceholder} numberOfLines={1}>
-            {customersLoading ? 'Loading...' : selectedCustomerLabel || 'Select customer'}
-          </Text>
-          <Icon name="chevron-down" size={20} color={themeColors.textMuted} />
-        </TouchableOpacity>
-        <Modal
-          visible={customerDropdownOpen}
-          transparent
-          animationType="fade"
-          onRequestClose={() => setCustomerDropdownOpen(false)}
-        >
-          <View style={styles.tableModalBackdrop}>
-            <Pressable style={StyleSheet.absoluteFill} onPress={() => setCustomerDropdownOpen(false)} />
-            <View style={styles.tableModalContent} pointerEvents="box-none">
-              <View style={styles.tableModalHeader}>
-                <Text style={styles.tableModalTitle}>Select customer</Text>
-                <TouchableOpacity onPress={() => setCustomerDropdownOpen(false)} hitSlop={12}>
-                  <Icon name="x" size={24} color={themeColors.textMuted} />
-                </TouchableOpacity>
+      <View style={[styles.posChromeSection, { marginHorizontal: horizontalPadding }]}>
+        {searchExpanded ? (
+          <>
+            <View style={styles.posChromeHeader}>
+              <Text style={styles.posChromeHeaderTitle}>Search</Text>
+              <TouchableOpacity
+                onPress={() => {
+                  searchInputRef.current?.blur();
+                  setSearchExpanded(false);
+                }}
+                hitSlop={12}
+                style={styles.categoryHeaderAction}
+                accessibilityLabel="Collapse search"
+                accessibilityRole="button"
+              >
+                <Text style={styles.categoryHeaderActionText}>Hide</Text>
+                <Icon name="chevron-up" size={16} color={ACCENT} />
+              </TouchableOpacity>
+            </View>
+            <View style={[styles.searchRowOuter, styles.posChromeInner]}>
+              <View
+                style={[
+                  styles.searchWrap,
+                  searchFocused && styles.searchWrapFocused,
+                ]}
+              >
+                <Icon name={FEATHER_ICONS.search} size={18} color={themeColors.textSubtle} style={styles.searchIcon} />
+                <TextInput
+                  ref={searchInputRef}
+                  style={styles.search}
+                  placeholder="Search menu..."
+                  placeholderTextColor={themeColors.textSubtle}
+                  value={search}
+                  onChangeText={setSearch}
+                  onFocus={() => setSearchFocused(true)}
+                  onBlur={() => setSearchFocused(false)}
+                  returnKeyType="search"
+                  clearButtonMode="never"
+                />
+                {search.trim().length > 0 ? (
+                  <TouchableOpacity
+                    onPress={() => setSearch('')}
+                    hitSlop={12}
+                    style={styles.searchClear}
+                    accessibilityLabel="Clear search"
+                  >
+                    <Icon name="x-circle" size={22} color={themeColors.textSubtle} />
+                  </TouchableOpacity>
+                ) : null}
               </View>
-              <ScrollView style={styles.tableModalScroll} keyboardShouldPersistTaps="handled">
+              <TouchableOpacity
+                style={[styles.searchFilterBtn, !categoriesExpanded && styles.searchFilterBtnActive]}
+                onPress={openCategoriesPanel}
+                accessibilityLabel={
+                  categoriesExpanded ? 'Scroll to top and highlight categories' : 'Show category grid'
+                }
+                accessibilityRole="button"
+              >
+                <Icon
+                  name="sliders"
+                  size={20}
+                  color={!categoriesExpanded ? ACCENT : themeColors.textSecondary}
+                />
+              </TouchableOpacity>
+            </View>
+          </>
+        ) : (
+          <View style={[styles.searchRowOuter, styles.posChromeInner]}>
+            <View style={styles.searchCollapsedBar}>
+              <TouchableOpacity
+                style={styles.searchCollapsedMain}
+                onPress={() => setSearchExpanded(true)}
+                activeOpacity={0.75}
+                accessibilityLabel="Expand search"
+                accessibilityRole="button"
+              >
+                <Icon name={FEATHER_ICONS.search} size={18} color={themeColors.textSubtle} />
+                <Text style={styles.searchCollapsedText} numberOfLines={1}>
+                  {search.trim().length > 0 ? `“${search.trim()}”` : 'Search menu...'}
+                </Text>
+              </TouchableOpacity>
+              {search.trim().length > 0 ? (
                 <TouchableOpacity
-                  style={[styles.tableOption, !customerName && styles.tableOptionActive]}
+                  onPress={() => setSearch('')}
+                  hitSlop={10}
+                  style={styles.searchCollapsedClear}
+                  accessibilityLabel="Clear search"
+                >
+                  <Icon name="x-circle" size={20} color={themeColors.textSubtle} />
+                </TouchableOpacity>
+              ) : null}
+              <TouchableOpacity
+                onPress={() => setSearchExpanded(true)}
+                hitSlop={10}
+                style={styles.searchCollapsedChevron}
+                accessibilityLabel="Expand search"
+                accessibilityRole="button"
+              >
+                <Icon name="chevron-down" size={16} color={themeColors.textMuted} />
+              </TouchableOpacity>
+            </View>
+            <TouchableOpacity
+              style={[styles.searchFilterBtn, !categoriesExpanded && styles.searchFilterBtnActive]}
+              onPress={openCategoriesPanel}
+              accessibilityLabel={
+                categoriesExpanded ? 'Scroll to top and highlight categories' : 'Show category grid'
+              }
+              accessibilityRole="button"
+            >
+              <Icon
+                name="sliders"
+                size={20}
+                color={!categoriesExpanded ? ACCENT : themeColors.textSecondary}
+              />
+            </TouchableOpacity>
+          </View>
+        )}
+      </View>
+
+      <View style={[styles.posChromeSection, { marginHorizontal: horizontalPadding }]}>
+        {categoriesExpanded ? (
+          <>
+            <View style={styles.posChromeHeader}>
+              <Text style={styles.posChromeHeaderTitle}>Categories</Text>
+              <TouchableOpacity
+                onPress={() => setCategoriesExpanded(false)}
+                hitSlop={12}
+                style={styles.categoryHeaderAction}
+                accessibilityLabel="Collapse categories"
+                accessibilityRole="button"
+              >
+                <Text style={styles.categoryHeaderActionText}>Hide</Text>
+                <Icon name="chevron-up" size={16} color={ACCENT} />
+              </TouchableOpacity>
+            </View>
+            <View style={styles.categoryGrid}>
+              {categories.map((c, idx) => {
+                const emoji = CATEGORY_EMOJI[c.id] ?? '🍽️';
+                const isActive = category === c.id;
+                return (
+                  <Animated.View
+                    key={c.id}
+                    entering={FadeInRight.delay(Math.min(idx, 12) * 28).duration(240).springify().damping(18)}
+                    style={[styles.categoryGridCell, { width: `${100 / categoryGridColumns}%` }]}
+                  >
+                    <PressableScale
+                      activeScale={0.96}
+                      style={[styles.categoryGridTile, isActive && styles.categoryGridTileActive]}
+                      onPress={() => setCategory(c.id)}
+                      accessibilityRole="button"
+                      accessibilityLabel={`${c.label} category`}
+                      accessibilityState={{ selected: isActive }}
+                    >
+                      <Text style={styles.categoryGridEmoji} allowFontScaling={false}>
+                        {emoji}
+                      </Text>
+                      <Text
+                        style={[styles.categoryGridLabel, isActive && styles.categoryGridLabelActive]}
+                        numberOfLines={2}
+                      >
+                        {c.label}
+                      </Text>
+                    </PressableScale>
+                  </Animated.View>
+                );
+              })}
+            </View>
+          </>
+        ) : (
+          <TouchableOpacity
+            style={styles.categoryCollapsedBar}
+            onPress={() => setCategoriesExpanded(true)}
+            activeOpacity={0.75}
+            accessibilityLabel="Expand categories"
+            accessibilityRole="button"
+          >
+            <View style={styles.categoryCollapsedIconWrap}>
+              <Text style={styles.categoryCollapsedEmoji} allowFontScaling={false}>
+                {CATEGORY_EMOJI[category] ?? '🍽️'}
+              </Text>
+            </View>
+            <View style={styles.categoryCollapsedTextCol}>
+              <Text style={styles.categoryCollapsedKicker}>Category</Text>
+              <Text style={styles.categoryCollapsedValue} numberOfLines={1}>
+                {category === 'All' ? 'All' : (categoryLabel ?? category)}
+              </Text>
+            </View>
+            <Icon name="chevron-down" size={16} color={themeColors.textMuted} />
+          </TouchableOpacity>
+        )}
+      </View>
+      </>
+      ) : null}
+
+      <Modal
+        visible={tableDropdownOpen && orderType === 'DINE_IN'}
+        transparent
+        animationType="fade"
+        statusBarTranslucent
+        presentationStyle="overFullScreen"
+        onRequestClose={() => setTableDropdownOpen(false)}
+      >
+        <View style={styles.tableModalBackdrop}>
+          <Pressable style={StyleSheet.absoluteFill} onPress={() => setTableDropdownOpen(false)} />
+          <View style={styles.tableModalContent} pointerEvents="box-none">
+            <View style={styles.tableModalHeader}>
+              <Text style={styles.tableModalTitle}>Select table</Text>
+              <TouchableOpacity onPress={() => setTableDropdownOpen(false)} hitSlop={12}>
+                <Icon name="x" size={24} color={themeColors.textMuted} />
+              </TouchableOpacity>
+            </View>
+            <ScrollView style={styles.tableModalScroll} keyboardShouldPersistTaps="handled">
+              <TouchableOpacity
+                style={[styles.tableOption, !tableNumber && styles.tableOptionActive]}
+                onPress={() => {
+                  setTableNumber('');
+                  setSelectedTable(null);
+                  setOrderType('TAKEAWAY').catch(() => {});
+                  setTableDropdownOpen(false);
+                }}
+              >
+                <Text style={[styles.tableOptionText, !tableNumber && styles.tableOptionTextActive]}>No table</Text>
+              </TouchableOpacity>
+              {tables.map((t) => (
+                <TouchableOpacity
+                  key={t.id}
+                  style={[styles.tableOption, tableNumber === t.number && styles.tableOptionActive]}
                   onPress={() => {
-                    setCustomerName('');
-                    setSelectedCustomer(null);
+                    setTableNumber(t.number);
+                    setSelectedTable(t);
+                    setTableDropdownOpen(false);
+                  }}
+                >
+                  <Text style={[styles.tableOptionText, tableNumber === t.number && styles.tableOptionTextActive]}>
+                    Table {t.name ?? t.number}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
+
+      <Modal
+        visible={customerDropdownOpen}
+        transparent
+        animationType="fade"
+        statusBarTranslucent
+        presentationStyle="overFullScreen"
+        onRequestClose={() => setCustomerDropdownOpen(false)}
+      >
+        <View style={styles.tableModalBackdrop}>
+          <Pressable style={StyleSheet.absoluteFill} onPress={() => setCustomerDropdownOpen(false)} />
+          <View style={styles.tableModalContent} pointerEvents="box-none">
+            <View style={styles.tableModalHeader}>
+              <Text style={styles.tableModalTitle}>Select customer</Text>
+              <TouchableOpacity onPress={() => setCustomerDropdownOpen(false)} hitSlop={12}>
+                <Icon name="x" size={24} color={themeColors.textMuted} />
+              </TouchableOpacity>
+            </View>
+            <ScrollView style={styles.tableModalScroll} keyboardShouldPersistTaps="handled">
+              <TouchableOpacity
+                style={[styles.tableOption, !customerName && styles.tableOptionActive]}
+                onPress={() => {
+                  setCustomerName('');
+                  setSelectedCustomer(null);
+                  setCustomerDropdownOpen(false);
+                }}
+              >
+                <Text style={[styles.tableOptionText, !customerName && styles.tableOptionTextActive]}>No customer</Text>
+              </TouchableOpacity>
+              {customers.map((c) => (
+                <TouchableOpacity
+                  key={c.id}
+                  style={[styles.tableOption, customerName === c.name && styles.tableOptionActive]}
+                  onPress={() => {
+                    setCustomerName(c.name);
+                    setSelectedCustomer(c);
                     setCustomerDropdownOpen(false);
                   }}
                 >
-                  <Text style={[styles.tableOptionText, !customerName && styles.tableOptionTextActive]}>No customer</Text>
+                  <Text style={[styles.tableOptionText, customerName === c.name && styles.tableOptionTextActive]}>
+                    {c.name}{c.phone ? ` · ${c.phone}` : ''}
+                  </Text>
                 </TouchableOpacity>
-                {customers.map((c) => (
-                  <TouchableOpacity
-                    key={c.id}
-                    style={[styles.tableOption, customerName === c.name && styles.tableOptionActive]}
-                    onPress={() => {
-                      setCustomerName(c.name);
-                      setSelectedCustomer(c);
-                      setCustomerDropdownOpen(false);
-                    }}
-                  >
-                    <Text style={[styles.tableOptionText, customerName === c.name && styles.tableOptionTextActive]}>
-                      {c.name}{c.phone ? ` · ${c.phone}` : ''}
-                    </Text>
-                  </TouchableOpacity>
-                ))}
-              </ScrollView>
-            </View>
+              ))}
+            </ScrollView>
           </View>
-        </Modal>
-      </Animated.View>
+        </View>
+      </Modal>
 
       {filteredItems.length === 0 ? (
-        <Animated.View entering={FadeIn.duration(300)} style={styles.foodList}>
+        <Animated.View
+          entering={FadeIn.duration(300)}
+          style={[styles.foodList, { paddingHorizontal: horizontalPadding }]}
+        >
+          {menuListHeader}
           <EmptyState
-            icon={<Text style={styles.emptyEmoji} allowFontScaling={false}>🛒</Text>}
-            title="No items"
-            subtitle="Try another category or search"
+            icon={<Text style={styles.emptyEmoji} allowFontScaling={false}>🔍</Text>}
+            title="Nothing here yet"
+            subtitle="Clear the search, pick another category, or choose “All” to see everything."
           />
         </Animated.View>
       ) : (
@@ -707,6 +1554,7 @@ export default function POSScreen() {
           keyExtractor={keyExtractor}
           key={numColumns}
           numColumns={numColumns}
+          ListHeaderComponent={menuListHeader}
           initialNumToRender={FOOD_LIST_INITIAL_NUM}
           maxToRenderPerBatch={FOOD_LIST_MAX_BATCH}
           windowSize={FOOD_LIST_WINDOW_SIZE}
@@ -715,24 +1563,66 @@ export default function POSScreen() {
           columnWrapperStyle={numColumns > 1 ? styles.foodGridRow : undefined}
           style={styles.main}
           showsVerticalScrollIndicator={false}
+          keyboardDismissMode="on-drag"
+          keyboardShouldPersistTaps="handled"
           removeClippedSubviews={Platform.OS === 'android'}
         />
       )}
 
       <PressableScale
-        activeScale={0.92}
-        style={[styles.fab, { bottom: insets.bottom + 20 }]}
+        activeScale={0.98}
+        style={[
+          styles.floatingCartBar,
+          cart.length === 0 && styles.floatingCartBarEmpty,
+          {
+            bottom: insets.bottom + 14,
+            ...(cart.length > 0
+              ? { left: horizontalPadding, right: horizontalPadding }
+              : { alignSelf: 'center' as const }),
+          },
+        ]}
         onPress={() => setShowCartSheet(true)}
       >
-        <Text style={styles.fabEmoji} allowFontScaling={false}>🛒</Text>
-        {cart.length > 0 && (
-          <View style={styles.fabBadge}>
-            <Text style={styles.fabBadgeText}>
-              {cart.reduce((s, c) => s + c.qty, 0)}
-            </Text>
+        {cart.length > 0 ? (
+          <View style={styles.floatingCartBarInner}>
+            <View style={styles.floatingCartBarTextCol}>
+              <Text style={styles.floatingCartBarKicker} numberOfLines={1}>
+                {cartItemQtyTotal === 1 ? '1 item in order' : `${cartItemQtyTotal} items in order`}
+              </Text>
+              <Text style={styles.floatingCartBarTotal} numberOfLines={1}>
+                {fmtMoney(subtotal)}
+              </Text>
+            </View>
+            <View style={styles.floatingCartBarCtaCircle}>
+              <Icon name="shopping-bag" size={22} color={themeColors.primaryContrast} />
+            </View>
+          </View>
+        ) : (
+          <View style={styles.floatingCartBarEmptyInner}>
+            <Icon name="shopping-bag" size={24} color={themeColors.primaryContrast} />
           </View>
         )}
       </PressableScale>
+
+      {addToastLabel ? (
+        <Animated.View
+          entering={FadeInUp.duration(260).springify().damping(18)}
+          pointerEvents="none"
+          style={[styles.addToastWrap, { bottom: insets.bottom + 96 }]}
+        >
+          <View style={styles.addToast}>
+            <View style={styles.addToastIcon}>
+              <Icon name="check" size={18} color={themeColors.primaryContrast} />
+            </View>
+            <View style={styles.addToastTextCol}>
+              <Text style={styles.addToastKicker}>Added to order</Text>
+              <Text style={styles.addToastTitle} numberOfLines={2}>
+                {addToastLabel}
+              </Text>
+            </View>
+          </View>
+        </Animated.View>
+      ) : null}
 
       {/* Cart bottom sheet — opens from bottom with Reanimated */}
       <Modal
@@ -755,11 +1645,18 @@ export default function POSScreen() {
           >
             <View style={styles.cartSheetHandle} />
             <View style={styles.cartSheetHeader}>
-              <View style={styles.cartSheetTitleRow}>
-                <Text style={styles.cartTitle}>Cart</Text>
-                {cart.length > 0 && (
-                  <Badge count={cart.reduce((s, c) => s + c.qty, 0)} style={styles.cartBadgeMargin} />
-                )}
+              <View style={styles.cartSheetTitleBlock}>
+                <View style={styles.cartSheetTitleRow}>
+                  <Text style={styles.cartTitle}>Current order</Text>
+                  {cart.length > 0 && (
+                    <Badge count={cart.reduce((s, c) => s + c.qty, 0)} style={styles.cartBadgeMargin} />
+                  )}
+                </View>
+                {cart.length > 0 ? (
+                  <Text style={styles.cartSheetSubtitle}>
+                    {cartItemQtyTotal === 1 ? '1 item' : `${cartItemQtyTotal} items`} · {fmtMoney(subtotal)}
+                  </Text>
+                ) : null}
               </View>
               <TouchableOpacity
                 onPress={closeCartSheet}
@@ -772,8 +1669,8 @@ export default function POSScreen() {
             {cart.length === 0 ? (
               <EmptyState
                 icon={<Text style={styles.cartEmptyEmoji} allowFontScaling={false}>🛒</Text>}
-                title="Cart is empty"
-                subtitle="Add items from the menu"
+                title="Nothing in the cart yet"
+                subtitle="Tap dishes on the menu — they’ll show up here"
               />
             ) : (
               <ScrollView
@@ -795,15 +1692,23 @@ export default function POSScreen() {
                   />
                 </View>
                 <View style={styles.totals}>
-                  <Row label="Subtotal" value={subtotal} />
-                  <Row label="Service charge" value={APP_SERVICE_CHARGE_VALUE} />
+                  <Row label="Subtotal" value={subtotal} format={fmtMoney} />
+                  <Row label="Service charge" value={APP_SERVICE_CHARGE_VALUE} format={fmtMoney} />
                   <View style={styles.totalRow}>
                     <Text style={styles.totalLabel}>Total</Text>
-                    <Text style={styles.totalValue}>${total.toFixed(2)}</Text>
+                    <Text style={styles.totalValue}>{fmtMoney(total)}</Text>
                   </View>
                 </View>
                 <TouchableOpacity
-                  style={[styles.submitBtn, shadowMd]}
+                  style={styles.addMoreFromCartBtn}
+                  onPress={closeCartSheet}
+                  activeOpacity={0.85}
+                >
+                  <Icon name="plus-circle" size={20} color={ACCENT} />
+                  <Text style={styles.addMoreFromCartBtnText}>Add more items</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[styles.submitBtn, shadowAccent]}
                   onPress={() => {
                     handlePlaceOrder();
                     closeCartSheet();
@@ -811,7 +1716,7 @@ export default function POSScreen() {
                   activeOpacity={0.85}
                 >
                   <Icon name="shopping-bag" size={20} color="#fff" />
-                  <Text style={styles.submitBtnText}>Place order</Text>
+                  <Text style={styles.submitBtnText}>Review & place order</Text>
                   <Icon name="arrow-right" size={20} color="#fff" />
                 </TouchableOpacity>
                 <TouchableOpacity
@@ -853,7 +1758,7 @@ export default function POSScreen() {
               <Text style={styles.placeOrderSectionLabel}>Order summary</Text>
               {orderType === 'DINE_IN' && !!selectedTableLabel && (
                 <View style={styles.placeOrderItemRow}>
-                  <Text style={styles.placeOrderItemName}>Selected table</Text>
+                  <Text style={styles.placeOrderItemName}>Table number</Text>
                   <Text style={styles.placeOrderItemTotal}>{selectedTableLabel}</Text>
                 </View>
               )}
@@ -870,16 +1775,16 @@ export default function POSScreen() {
                     {(c.modifiers ?? []).length > 0 && ` (${(c.modifiers ?? []).map((m) => m.name).join(', ')})`}
                   </Text>
                   <Text style={styles.placeOrderItemTotal}>
-                    ${lineTotal(c).toFixed(2)}
+                    {fmtMoney(lineTotal(c))}
                   </Text>
                 </View>
               ))}
               <View style={styles.placeOrderTotals}>
-                <Row label="Subtotal" value={subtotal} />
-                <Row label="Service charge" value={APP_SERVICE_CHARGE_VALUE} />
+                <Row label="Subtotal" value={subtotal} format={fmtMoney} />
+                <Row label="Service charge" value={APP_SERVICE_CHARGE_VALUE} format={fmtMoney} />
                 <View style={styles.placeOrderTotalRow}>
                   <Text style={styles.totalLabel}>Total</Text>
-                  <Text style={styles.totalValue}>${total.toFixed(2)}</Text>
+                  <Text style={styles.totalValue}>{fmtMoney(total)}</Text>
                 </View>
               </View>
             </ScrollView>
@@ -891,6 +1796,178 @@ export default function POSScreen() {
               <Text style={styles.confirmPayBtnText}>Confirm Order</Text>
               <Icon name="check" size={20} color="#fff" />
             </TouchableOpacity>
+          </Animated.View>
+        </View>
+      </Modal>
+
+      {/* Variant sheet — hero + curved body (delivery-style) + segmented rows + qty footer */}
+      <Modal
+        visible={variantPickFood !== null}
+        transparent
+        animationType="slide"
+        statusBarTranslucent
+        onRequestClose={() => setVariantPickFood(null)}
+      >
+        <View style={styles.variantModalRoot}>
+          <Pressable style={StyleSheet.absoluteFill} onPress={() => setVariantPickFood(null)} />
+          <Animated.View
+            entering={FadeInDown.duration(340).springify().damping(20)}
+            style={[styles.variantFullSheet, { height: screenHeight * 0.88 }]}
+            pointerEvents="box-none"
+          >
+            <View style={[styles.variantHero, { paddingTop: Math.max(insets.top, 12) + 8 }]}>
+              <TouchableOpacity
+                onPress={() => setVariantPickFood(null)}
+                hitSlop={14}
+                style={[styles.variantHeroClose, { top: Math.max(insets.top, 8) + 4 }]}
+                accessibilityRole="button"
+                accessibilityLabel="Close"
+              >
+                <Icon name="chevron-down" size={26} color="rgba(255,255,255,0.92)" />
+              </TouchableOpacity>
+              <View style={styles.variantHeroImageShell}>
+                {variantHeroUri ? (
+                  <Image
+                    source={{ uri: variantHeroUri }}
+                    style={styles.variantHeroImage}
+                    resizeMode="contain"
+                    fadeDuration={Platform.OS === 'android' ? 0 : undefined}
+                    onError={() => setVariantHeroImageFailed(true)}
+                  />
+                ) : (
+                  <View style={styles.variantHeroPlaceholder}>
+                    <Text style={styles.variantHeroMonogramText} allowFontScaling={false}>
+                      {variantHeroMonogram}
+                    </Text>
+                  </View>
+                )}
+              </View>
+              <Text style={styles.variantHeroTitle} numberOfLines={2}>
+                {variantPickFood?.item_name ?? ''}
+              </Text>
+              {(variantPickFood?.description ?? '').trim().length > 0 ? (
+                <Text style={styles.variantHeroSubtitle} numberOfLines={2}>
+                  {(variantPickFood?.description ?? '').trim()}
+                </Text>
+              ) : null}
+              <Text style={styles.variantHeroPrice}>{fmtMoney(variantSheetUnitPrice)}</Text>
+            </View>
+
+            <View style={styles.variantSheetBody}>
+              <View style={styles.variantSheetHandleLight} accessibilityLabel="Sheet" />
+              <Text style={styles.variantOptionsSectionTitle}>Choose options</Text>
+              <ScrollView
+                style={styles.variantOptionsScroll}
+                contentContainerStyle={styles.variantOptionsScrollContent}
+                showsVerticalScrollIndicator={false}
+              >
+                {(variantPickFood?.variantGroups ?? []).map((g) => (
+                  <View key={g.id} style={styles.variantGroupBlock}>
+                    <Text style={styles.variantGroupTitle}>{g.name}</Text>
+                    {g.options.length <= VARIANT_SEGMENT_MAX ? (
+                      <ScrollView
+                        horizontal
+                        showsHorizontalScrollIndicator={false}
+                        contentContainerStyle={styles.variantChipScroll}
+                      >
+                        {g.options.map((opt) => {
+                          const selected = variantSelections[g.id] === opt.id;
+                          return (
+                            <TouchableOpacity
+                              key={opt.id}
+                              style={[styles.variantSegmentChip, selected && styles.variantSegmentChipSelected]}
+                              onPress={() => setVariantSelections((prev) => ({ ...prev, [g.id]: opt.id }))}
+                              activeOpacity={0.88}
+                            >
+                              <Text
+                                style={[styles.variantSegmentChipName, selected && styles.variantSegmentChipNameSelected]}
+                                numberOfLines={2}
+                              >
+                                {opt.name}
+                              </Text>
+                              <Text
+                                style={[
+                                  styles.variantSegmentChipDelta,
+                                  selected && styles.variantSegmentChipDeltaSelected,
+                                ]}
+                              >
+                                {formatPriceDelta(opt.priceDelta, posCurrency)}
+                              </Text>
+                            </TouchableOpacity>
+                          );
+                        })}
+                      </ScrollView>
+                    ) : (
+                      <View style={styles.variantRowList}>
+                        {g.options.map((opt, optIdx) => {
+                          const selected = variantSelections[g.id] === opt.id;
+                          const isLastInGroup = optIdx === g.options.length - 1;
+                          return (
+                            <TouchableOpacity
+                              key={opt.id}
+                              style={[
+                                styles.variantRow,
+                                selected && styles.variantRowSelected,
+                                isLastInGroup && styles.variantRowLast,
+                              ]}
+                              onPress={() => setVariantSelections((prev) => ({ ...prev, [g.id]: opt.id }))}
+                              activeOpacity={0.88}
+                            >
+                              <View
+                                style={[
+                                  styles.variantRadioOuter,
+                                  selected && styles.variantRadioOuterSelected,
+                                ]}
+                              >
+                                {selected ? <View style={styles.variantRadioInner} /> : null}
+                              </View>
+                              <Text style={styles.variantRowName} numberOfLines={2}>
+                                {opt.name}
+                              </Text>
+                              <Text style={styles.variantRowDelta}>
+                                {formatPriceDelta(opt.priceDelta, posCurrency)}
+                              </Text>
+                            </TouchableOpacity>
+                          );
+                        })}
+                      </View>
+                    )}
+                  </View>
+                ))}
+              </ScrollView>
+
+              <View style={[styles.variantFooterBar, { paddingBottom: insets.bottom + 14 }]}>
+                <View style={styles.variantFooterRow}>
+                  <View style={styles.variantStepperPill}>
+                    <Text style={styles.variantStepperLabel}>Qty</Text>
+                    <TouchableOpacity
+                      onPress={() => setVariantSheetQty((q) => Math.max(1, q - 1))}
+                      style={styles.variantStepperBtn}
+                      hitSlop={10}
+                    >
+                      <Icon name="minus" size={20} color="#fff" />
+                    </TouchableOpacity>
+                    <Text style={styles.variantStepperValue}>{variantSheetQty}</Text>
+                    <TouchableOpacity
+                      onPress={() => setVariantSheetQty((q) => q + 1)}
+                      style={styles.variantStepperBtn}
+                      hitSlop={10}
+                    >
+                      <Icon name="plus" size={20} color="#fff" />
+                    </TouchableOpacity>
+                  </View>
+                  <TouchableOpacity
+                    style={[styles.variantFooterCta, shadowAccent]}
+                    onPress={confirmVariantPick}
+                    activeOpacity={0.9}
+                  >
+                    <Text style={styles.variantFooterCtaText} numberOfLines={1}>
+                      Add to order · {fmtMoney(variantSheetLineTotal)}
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            </View>
           </Animated.View>
         </View>
       </Modal>
@@ -943,7 +2020,7 @@ export default function POSScreen() {
                         <View key={m.id} style={styles.modifiersRow}>
                           <View style={styles.modifiersRowLeft}>
                             <Text style={styles.modifiersRowName}>{m.name}</Text>
-                            <Text style={styles.modifiersRowPrice}>{m.price > 0 ? `+$${m.price.toFixed(2)}` : 'Free'}</Text>
+                            <Text style={styles.modifiersRowPrice}>{m.price > 0 ? `+${fmtMoney(m.price)}` : 'Free'}</Text>
                           </View>
                           <TouchableOpacity style={styles.modifiersRemoveBtn} onPress={() => removeMod(m)}>
                             <Icon name="trash-2" size={16} color="#dc2626" />
@@ -962,7 +2039,7 @@ export default function POSScreen() {
                       >
                         <View style={styles.modifiersRowLeft}>
                           <Text style={styles.modifiersRowName}>{m.name}</Text>
-                          <Text style={styles.modifiersRowPrice}>{m.price > 0 ? `+$${m.price.toFixed(2)}` : 'Free'}</Text>
+                          <Text style={styles.modifiersRowPrice}>{m.price > 0 ? `+${fmtMoney(m.price)}` : 'Free'}</Text>
                         </View>
                         <View style={styles.modifiersAddBtn}>
                           <Icon name="plus" size={16} color="#fff" />
@@ -989,11 +2066,20 @@ export default function POSScreen() {
   );
 }
 
-function Row({ label, value }: { label: string; value: number }) {
+function Row({
+  label,
+  value,
+  format,
+}: {
+  label: string;
+  value: number;
+  format?: (n: number) => string;
+}) {
+  const display = format ? format(value) : `$${value.toFixed(2)}`;
   return (
     <View style={styles.summaryRow}>
       <Text style={styles.summaryLabel}>{label}</Text>
-      <Text style={styles.summaryValue}>${value.toFixed(2)}</Text>
+      <Text style={styles.summaryValue}>{display}</Text>
     </View>
   );
 }
@@ -1001,7 +2087,7 @@ function Row({ label, value }: { label: string; value: number }) {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: themeColors.surfaceTertiary,
+    backgroundColor: themeColors.posCanvas,
   },
   toastWrap: {
     position: 'absolute',
@@ -1012,7 +2098,7 @@ const styles = StyleSheet.create({
   toast: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: themeColors.primaryDark,
+    backgroundColor: themeColors.posAccentDark,
     borderRadius: radius.lg,
     paddingVertical: spacing.md,
     paddingHorizontal: spacing.lg,
@@ -1044,96 +2130,428 @@ const styles = StyleSheet.create({
     marginTop: 3,
     lineHeight: 18,
   },
+  menuSectionHeader: {
+    paddingTop: spacing.sm,
+    paddingBottom: spacing.md,
+    marginTop: spacing.xs,
+    marginBottom: spacing.xs,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: themeColors.borderLight,
+  },
+  menuSectionTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    marginBottom: 4,
+  },
+  menuSectionTitle: {
+    ...typography.h2,
+    fontSize: 22,
+    fontWeight: '800',
+    color: themeColors.text,
+    letterSpacing: -0.6,
+  },
+  menuCountPill: {
+    minWidth: 28,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 10,
+    backgroundColor: themeColors.posAccentSoft,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  menuCountPillText: {
+    fontSize: 13,
+    fontWeight: '800',
+    color: themeColors.posAccentDark,
+    letterSpacing: -0.2,
+  },
+  menuSectionMeta: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: themeColors.textMuted,
+    lineHeight: 18,
+  },
   categoryBar: {
-    backgroundColor: themeColors.surface,
-    paddingVertical: spacing.sm,
+    backgroundColor: 'transparent',
+    paddingVertical: 0,
     paddingHorizontal: spacing.md,
-    borderBottomWidth: 1,
-    borderBottomColor: themeColors.border,
+    marginBottom: POS_HEADER_GAP,
+    borderBottomWidth: 0,
+  },
+  categoryBarHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    minHeight: POS_HEADER_ROW_HEIGHT,
+    marginBottom: spacing.sm,
+    paddingHorizontal: 4,
+    paddingRight: 6,
+  },
+  categoryBarHeaderTitle: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: themeColors.text,
+    letterSpacing: -0.25,
+    lineHeight: 20,
+  },
+  categoryHeaderAction: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingVertical: 4,
+    paddingLeft: 8,
+  },
+  categoryHeaderActionText: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: ACCENT,
+    lineHeight: 20,
+  },
+  posChromeBulkBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: spacing.sm,
+    marginBottom: POS_HEADER_GAP,
+  },
+  posChromeBulkToggle: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    flexShrink: 0,
+    paddingVertical: 4,
+    paddingRight: 4,
+  },
+  posChromeBulkTrail: {
+    flex: 1,
+    minWidth: 0,
+    fontSize: 13,
+    fontWeight: '600',
+    color: themeColors.textSecondary,
+    textAlign: 'right',
+    letterSpacing: -0.15,
+  },
+  posChromeSection: {
+    marginBottom: POS_HEADER_GAP,
+  },
+  posChromeHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    minHeight: POS_HEADER_ROW_HEIGHT,
+    marginBottom: spacing.sm,
+    paddingHorizontal: 4,
+    paddingRight: 6,
+  },
+  posChromeHeaderTitle: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: themeColors.text,
+    letterSpacing: -0.25,
+    lineHeight: 20,
+  },
+  posChromeInner: {
+    marginBottom: 0,
+  },
+  posChromeCollapsed: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    minHeight: POS_HEADER_ROW_HEIGHT,
+    paddingVertical: 0,
+    paddingHorizontal: 14,
+    gap: 12,
+    backgroundColor: themeColors.surface,
+    borderRadius: 18,
+    borderWidth: 0,
+    ...Platform.select({
+      ios: {
+        shadowColor: '#0f172a',
+        shadowOffset: { width: 0, height: 2 },
+        shadowOpacity: 0.07,
+        shadowRadius: 10,
+      },
+      android: { elevation: 3 },
+    }),
+  },
+  categoryCollapseBtn: {
+    padding: spacing.xxs,
+  },
+  categoryGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    marginHorizontal: -6,
+    marginBottom: spacing.sm,
+  },
+  categoryGridCell: {
+    padding: 6,
+  },
+  categoryGridTile: {
+    backgroundColor: themeColors.surface,
+    borderRadius: 18,
+    paddingVertical: 14,
+    paddingHorizontal: 6,
+    alignItems: 'center',
+    justifyContent: 'center',
+    minHeight: 100,
+    borderWidth: 0,
+    ...Platform.select({
+      ios: {
+        shadowColor: '#0f172a',
+        shadowOffset: { width: 0, height: 3 },
+        shadowOpacity: 0.07,
+        shadowRadius: 8,
+      },
+      android: { elevation: 3 },
+    }),
+  },
+  categoryGridTileActive: {
+    borderWidth: 2,
+    borderColor: ACCENT,
+    backgroundColor: themeColors.posAccentSoft,
+  },
+  categoryGridEmoji: {
+    fontSize: 30,
+    lineHeight: 36,
+    textAlign: 'center',
+  },
+  categoryGridLabel: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: themeColors.textSecondary,
+    textAlign: 'center',
+    marginTop: 8,
+    lineHeight: 14,
+    paddingHorizontal: 2,
+  },
+  categoryGridLabelActive: {
+    color: themeColors.posAccentDark,
+    fontWeight: '800',
+  },
+  categoryCollapsedBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    minHeight: POS_HEADER_ROW_HEIGHT,
+    paddingVertical: 0,
+    paddingHorizontal: 14,
+    gap: 12,
+    backgroundColor: themeColors.surface,
+    borderRadius: 18,
+    borderWidth: 0,
+    ...Platform.select({
+      ios: {
+        shadowColor: '#0f172a',
+        shadowOffset: { width: 0, height: 2 },
+        shadowOpacity: 0.07,
+        shadowRadius: 10,
+      },
+      android: { elevation: 3 },
+    }),
+  },
+  categoryCollapsedIconWrap: {
+    width: 40,
+    height: 40,
+    borderRadius: 12,
+    backgroundColor: themeColors.posAccentMuted,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  categoryCollapsedEmoji: {
+    fontSize: 22,
+    lineHeight: 26,
+  },
+  categoryCollapsedTextCol: {
+    flex: 1,
+    minWidth: 0,
+  },
+  categoryCollapsedKicker: {
+    fontSize: 10,
+    fontWeight: '800',
+    color: themeColors.textSubtle,
+    letterSpacing: 0.5,
+    textTransform: 'uppercase',
+    marginBottom: 2,
+  },
+  categoryCollapsedValue: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: themeColors.text,
+    letterSpacing: -0.2,
+    lineHeight: 20,
   },
   categoryScrollContent: {
     paddingRight: spacing.md,
   },
   categoryPillWrap: {
-    marginRight: spacing.sm,
+    marginRight: spacing.md,
   },
   categoryPill: {
-    flexDirection: 'row',
+    flexDirection: 'column',
     alignItems: 'center',
-    justifyContent: 'center',
-    gap: spacing.xs,
-    paddingVertical: spacing.sm,
-    paddingHorizontal: spacing.md,
-    borderRadius: radius.sm,
-    backgroundColor: themeColors.surfaceTertiary,
-    borderWidth: 1.5,
-    borderColor: themeColors.border,
-    minHeight: 48,
+    justifyContent: 'flex-start',
+    gap: 8,
+    paddingVertical: 4,
+    paddingHorizontal: 2,
+    minWidth: 72,
+    maxWidth: 88,
+    backgroundColor: 'transparent',
+    borderWidth: 0,
   },
   categoryPillActive: {
-    backgroundColor: ACCENT,
+    backgroundColor: 'transparent',
+    borderWidth: 0,
+  },
+  categoryIconTile: {
+    width: 56,
+    height: 56,
+    borderRadius: 18,
+    backgroundColor: themeColors.surface,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: themeColors.border,
+    ...Platform.select({
+      ios: {
+        shadowColor: '#0f172a',
+        shadowOffset: { width: 0, height: 2 },
+        shadowOpacity: 0.06,
+        shadowRadius: 6,
+      },
+      android: { elevation: 2 },
+    }),
+  },
+  categoryIconTileActive: {
+    backgroundColor: themeColors.primaryMuted,
     borderColor: ACCENT,
+    borderWidth: 2,
   },
   categoryPillEmoji: {
     fontSize: 22,
     textAlign: 'center',
   },
   categoryPillLabel: {
-    ...typography.bodySemibold,
+    fontSize: 12,
+    fontWeight: '600',
     color: themeColors.textSecondary,
-    maxWidth: 100,
+    textAlign: 'center',
+    maxWidth: 88,
   },
   categoryPillLabelActive: {
-    color: themeColors.primaryContrast,
+    color: ACCENT,
+    fontWeight: '700',
   },
   orderTypeRow: {
     flexDirection: 'row',
-    padding: spacing.md,
-    gap: spacing.sm,
+    alignItems: 'center',
+    minHeight: POS_HEADER_ROW_HEIGHT,
+    marginBottom: POS_HEADER_GAP,
+    paddingHorizontal: 4,
+    paddingVertical: 4,
+    gap: 4,
     backgroundColor: themeColors.surface,
+    borderRadius: 999,
+    borderWidth: 0,
+    ...Platform.select({
+      ios: {
+        shadowColor: '#0f172a',
+        shadowOffset: { width: 0, height: 2 },
+        shadowOpacity: 0.07,
+        shadowRadius: 10,
+      },
+      android: { elevation: 3 },
+    }),
   },
   orderTypeBtn: {
     flex: 1,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    gap: spacing.xs,
-    paddingVertical: spacing.sm,
-    borderRadius: radius.sm,
-    backgroundColor: themeColors.surfaceSecondary,
-    borderWidth: 1,
-    borderColor: themeColors.border,
+    gap: 6,
+    minHeight: POS_HEADER_ROW_HEIGHT - 8,
+    paddingVertical: 0,
+    borderRadius: 999,
+    backgroundColor: 'transparent',
+    borderWidth: 0,
   },
   orderTypeBtnActive: {
-    backgroundColor: ACCENT,
-    borderColor: ACCENT,
+    backgroundColor: themeColors.posAccentMuted,
   },
   orderTypeLabel: {
-    ...typography.caption,
+    fontSize: 15,
+    fontWeight: '600',
     color: themeColors.textMuted,
+    lineHeight: 20,
   },
   orderTypeLabelActive: {
-    color: themeColors.primaryContrast,
+    color: themeColors.posAccentDark,
+    fontWeight: '700',
   },
   orderTypeEmoji: {
-    fontSize: 20,
+    fontSize: 18,
+    lineHeight: 22,
     textAlign: 'center',
   },
-  tableRow: {
+  contextCard: {
+    minHeight: POS_HEADER_ROW_HEIGHT,
+    marginBottom: POS_HEADER_GAP,
+    backgroundColor: themeColors.surface,
+    borderRadius: 18,
+    borderWidth: 0,
+    overflow: 'hidden',
+    justifyContent: 'center',
+    ...Platform.select({
+      ios: {
+        shadowColor: '#0f172a',
+        shadowOffset: { width: 0, height: 2 },
+        shadowOpacity: 0.07,
+        shadowRadius: 10,
+      },
+      android: { elevation: 3 },
+    }),
+  },
+  contextRowCombined: {
     flexDirection: 'row',
     alignItems: 'center',
-    marginHorizontal: spacing.md,
-    marginBottom: spacing.sm,
-    paddingHorizontal: spacing.md,
-    paddingVertical: spacing.sm,
-    backgroundColor: themeColors.surface,
-    borderRadius: radius.sm,
-    borderWidth: 1,
-    borderColor: themeColors.border,
-    gap: spacing.sm,
+    minHeight: POS_HEADER_ROW_HEIGHT,
   },
-  tableRowEmoji: {
-    fontSize: 20,
+  contextCell: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 0,
+    paddingLeft: 12,
+    paddingRight: 8,
+    gap: 10,
+    minWidth: 0,
+  },
+  contextCellMuted: {
+    opacity: 0.88,
+  },
+  contextVerticalRule: {
+    width: StyleSheet.hairlineWidth,
+    backgroundColor: themeColors.borderLight,
+    alignSelf: 'stretch',
+    marginVertical: 12,
+  },
+  contextIconBubble: {
+    width: 40,
+    height: 40,
+    borderRadius: 12,
+    backgroundColor: themeColors.posAccentMuted,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  contextLabelCol: {
+    flex: 1,
+    minWidth: 0,
+  },
+  contextFieldLabel: {
+    fontSize: 10,
+    fontWeight: '800',
+    color: themeColors.textSubtle,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+    marginBottom: 2,
   },
   tableDropdown: {
     flex: 1,
@@ -1144,11 +2562,15 @@ const styles = StyleSheet.create({
     gap: spacing.xs,
   },
   tableDropdownText: {
-    ...typography.bodyMedium,
+    ...typography.bodySemibold,
+    fontSize: 15,
+    lineHeight: 20,
     color: themeColors.text,
   },
   tableDropdownPlaceholder: {
-    ...typography.bodyMedium,
+    fontSize: 15,
+    fontWeight: '500',
+    lineHeight: 20,
     color: themeColors.textSubtle,
   },
   tableModalBackdrop: {
@@ -1198,67 +2620,518 @@ const styles = StyleSheet.create({
   tableOptionTextActive: {
     color: '#fff',
   },
-  searchWrap: {
+  tableGateRoot: {
+    flex: 1,
+    backgroundColor: 'rgba(2, 6, 23, 0.92)',
+    justifyContent: 'center',
+    paddingHorizontal: spacing.md,
+  },
+  tableGateCard: {
+    position: 'relative',
+    backgroundColor: 'rgba(30, 41, 59, 0.97)',
+    borderRadius: radius.xl + 4,
+    borderWidth: 1,
+    borderColor: 'rgba(94, 234, 212, 0.14)',
+    paddingTop: spacing.xl,
+    paddingHorizontal: spacing.lg,
+    paddingBottom: spacing.lg,
+    maxHeight: '90%',
+    overflow: 'hidden',
+    ...Platform.select({
+      ios: {
+        shadowColor: ACCENT,
+        shadowOffset: { width: 0, height: 20 },
+        shadowOpacity: 0.12,
+        shadowRadius: 40,
+      },
+      android: { elevation: 24 },
+    }),
+  },
+  tableGateGlowTop: {
+    position: 'absolute',
+    top: -80,
+    left: '15%',
+    right: '15%',
+    height: 160,
+    borderRadius: 80,
+    backgroundColor: 'rgba(13, 148, 136, 0.18)',
+  },
+  tableGateGlowBlob: {
+    position: 'absolute',
+    top: 40,
+    right: -50,
+    width: 140,
+    height: 140,
+    borderRadius: 70,
+    backgroundColor: 'rgba(8, 145, 178, 0.1)',
+  },
+  gateStepsRow: {
+    alignItems: 'center',
+    marginBottom: spacing.md,
+    zIndex: 1,
+  },
+  gateStepsTrack: {
     flexDirection: 'row',
     alignItems: 'center',
-    marginHorizontal: spacing.md,
-    marginTop: spacing.sm,
-    marginBottom: spacing.sm,
-    paddingHorizontal: spacing.md,
-    paddingVertical: spacing.sm,
-    backgroundColor: themeColors.surfaceSecondary,
-    borderRadius: radius.sm,
+    marginBottom: spacing.xs,
+  },
+  gateStepDot: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+    backgroundColor: 'rgba(148, 163, 184, 0.35)',
     borderWidth: 1,
-    borderColor: themeColors.border,
+    borderColor: 'rgba(148, 163, 184, 0.25)',
+  },
+  gateStepDotActive: {
+    backgroundColor: ACCENT,
+    borderColor: 'rgba(45, 212, 191, 0.5)',
+    transform: [{ scale: 1.15 }],
+  },
+  gateStepLine: {
+    width: 36,
+    height: 2,
+    marginHorizontal: 6,
+    borderRadius: 1,
+    backgroundColor: 'rgba(148, 163, 184, 0.25)',
+  },
+  gateStepLineActive: {
+    backgroundColor: 'rgba(13, 148, 136, 0.65)',
+  },
+  gateStepsLabel: {
+    ...typography.caption,
+    color: 'rgba(148, 163, 184, 0.95)',
+    fontSize: 12,
+    fontWeight: '600',
+    letterSpacing: 0.3,
+  },
+  gateStepsLabelSingle: {
+    ...typography.caption,
+    color: 'rgba(148, 163, 184, 0.95)',
+    fontSize: 12,
+    fontWeight: '600',
+    letterSpacing: 0.2,
+  },
+  gateChangeTableBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    paddingVertical: spacing.sm,
+    marginBottom: spacing.xs,
+    zIndex: 1,
+  },
+  gateChangeTableText: {
+    ...typography.bodyMedium,
+    color: ACCENT,
+    fontSize: 15,
+    fontWeight: '600',
+  },
+  tableGateHero: {
+    alignItems: 'center',
+    marginBottom: spacing.lg,
+    zIndex: 1,
+  },
+  tableGatePill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: radius.full,
+    backgroundColor: 'rgba(13, 148, 136, 0.15)',
+    borderWidth: 1,
+    borderColor: 'rgba(45, 212, 191, 0.22)',
+    marginBottom: spacing.md,
+  },
+  tableGatePillDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: '#2dd4bf',
+  },
+  tableGatePillText: {
+    ...typography.caption,
+    color: '#99f6e4',
+    fontSize: 11,
+    fontWeight: '700',
+    letterSpacing: 1.2,
+    textTransform: 'uppercase',
+  },
+  tableGateHeroIconWrap: {
+    marginBottom: spacing.md,
+  },
+  tableGateHeroRingOuter: {
+    padding: 3,
+    borderRadius: 28,
+    backgroundColor: 'rgba(255, 255, 255, 0.1)',
+  },
+  tableGateHeroRing: {
+    width: 76,
+    height: 76,
+    borderRadius: 25,
+    backgroundColor: ACCENT,
+    alignItems: 'center',
+    justifyContent: 'center',
+    ...Platform.select({
+      ios: {
+        shadowColor: ACCENT,
+        shadowOffset: { width: 0, height: 8 },
+        shadowOpacity: 0.45,
+        shadowRadius: 16,
+      },
+      android: { elevation: 10 },
+    }),
+  },
+  tableGateTitle: {
+    ...typography.h1,
+    color: '#f8fafc',
+    fontSize: 24,
+    letterSpacing: -0.4,
+    textAlign: 'center',
+    marginBottom: spacing.sm,
+  },
+  tableGateSubtitle: {
+    ...typography.body,
+    color: 'rgba(148, 163, 184, 0.95)',
+    fontSize: 14,
+    lineHeight: 21,
+    textAlign: 'center',
+    paddingHorizontal: spacing.xs,
+    maxWidth: 320,
+  },
+  tableGateLoading: {
+    paddingVertical: spacing.xl * 2,
+    alignItems: 'center',
+    gap: spacing.md,
+    zIndex: 1,
+  },
+  tableGateLoadingText: {
+    ...typography.body,
+    color: 'rgba(148, 163, 184, 0.9)',
+  },
+  tableGateEmpty: {
+    paddingVertical: spacing.xl,
+    paddingHorizontal: spacing.md,
+    alignItems: 'center',
+    zIndex: 1,
+  },
+  tableGateEmptyIcon: {
+    marginBottom: spacing.md,
+  },
+  tableGateEmptyText: {
+    ...typography.body,
+    color: 'rgba(148, 163, 184, 0.95)',
+    textAlign: 'center',
+    lineHeight: 22,
+  },
+  tableGateList: {
+    maxHeight: 340,
+    zIndex: 1,
+  },
+  tableGateListContent: {
+    paddingBottom: spacing.xs,
+  },
+  tableGateRow: {
+    gap: spacing.md,
+    marginBottom: spacing.md,
+  },
+  tableGateCell: {
+    flex: 1,
+    minWidth: 0,
+  },
+  tableGateTileWrap: {
+    flex: 1,
+  },
+  tableGateTile: {
+    backgroundColor: 'rgba(15, 23, 42, 0.85)',
+    borderRadius: radius.lg,
+    borderWidth: 1,
+    borderColor: 'rgba(71, 85, 105, 0.55)',
+    paddingVertical: spacing.md + 2,
+    paddingHorizontal: spacing.sm,
+    alignItems: 'center',
+    justifyContent: 'center',
+    minHeight: 102,
+    ...Platform.select({
+      ios: {
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 4 },
+        shadowOpacity: 0.2,
+        shadowRadius: 8,
+      },
+      android: { elevation: 3 },
+    }),
+  },
+  tableGateTileIconRow: {
+    marginBottom: spacing.sm,
+  },
+  tableGateTileIconBg: {
+    width: 40,
+    height: 40,
+    borderRadius: 12,
+    backgroundColor: 'rgba(13, 148, 136, 0.18)',
+    borderWidth: 1,
+    borderColor: 'rgba(45, 212, 191, 0.2)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  categoryGateEmoji: {
+    fontSize: 22,
+    lineHeight: 26,
+  },
+  tableGateTileNumber: {
+    ...typography.h2,
+    color: '#f1f5f9',
+    fontSize: 22,
+    fontWeight: '800',
+    textAlign: 'center',
+    letterSpacing: -0.5,
+  },
+  tableGateTileCaption: {
+    ...typography.caption,
+    color: 'rgba(148, 163, 184, 0.85)',
+    fontSize: 11,
+    fontWeight: '600',
+    marginTop: 2,
+    letterSpacing: 0.6,
+    textTransform: 'uppercase',
+  },
+  tableGateDivider: {
+    height: 1,
+    backgroundColor: 'rgba(148, 163, 184, 0.12)',
+    marginVertical: spacing.md,
+    zIndex: 1,
+  },
+  tableGateAlt: {
+    borderRadius: radius.lg,
+    overflow: 'hidden',
+    zIndex: 1,
+  },
+  tableGateAltInner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.md,
+    paddingVertical: spacing.md,
+    paddingHorizontal: spacing.md,
+    backgroundColor: 'rgba(13, 148, 136, 0.1)',
+    borderRadius: radius.lg,
+    borderWidth: 1,
+    borderColor: 'rgba(13, 148, 136, 0.28)',
+  },
+  tableGateAltIconWrap: {
+    width: 44,
+    height: 44,
+    borderRadius: 14,
+    backgroundColor: 'rgba(13, 148, 136, 0.2)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  tableGateAltTextCol: {
+    flex: 1,
+    minWidth: 0,
+  },
+  tableGateAltTitle: {
+    ...typography.bodySemibold,
+    color: '#ecfdf5',
+    fontSize: 16,
+    marginBottom: 2,
+  },
+  tableGateAltSub: {
+    ...typography.caption,
+    color: 'rgba(148, 163, 184, 0.9)',
+    fontSize: 12,
+  },
+  searchRowOuter: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    minHeight: POS_HEADER_ROW_HEIGHT,
+    marginBottom: POS_HEADER_GAP,
+    gap: 8,
+  },
+  searchWrap: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    minWidth: 0,
+    height: POS_HEADER_ROW_HEIGHT - 8,
+    maxHeight: POS_HEADER_ROW_HEIGHT - 8,
+    paddingHorizontal: 14,
+    paddingVertical: 0,
+    backgroundColor: themeColors.surface,
+    borderRadius: 18,
+    borderWidth: 0,
+    ...Platform.select({
+      ios: {
+        shadowColor: '#0f172a',
+        shadowOffset: { width: 0, height: 2 },
+        shadowOpacity: 0.07,
+        shadowRadius: 10,
+      },
+      android: { elevation: 3 },
+    }),
+  },
+  searchWrapFocused: {
+    borderColor: themeColors.posAccent,
+    borderWidth: 1.5,
   },
   searchIcon: {
     marginRight: spacing.sm,
   },
   search: {
     flex: 1,
-    ...typography.body,
+    fontSize: 15,
+    fontWeight: '500',
+    lineHeight: 20,
     color: themeColors.text,
     paddingVertical: spacing.xxs,
+  },
+  searchClear: {
+    marginLeft: spacing.xs,
+    padding: spacing.xxs,
+  },
+  searchCollapseBtn: {
+    marginLeft: spacing.xs,
+    padding: spacing.xxs,
+    justifyContent: 'center',
+  },
+  searchCollapsedBar: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    minWidth: 0,
+    height: POS_HEADER_ROW_HEIGHT - 8,
+    paddingHorizontal: 14,
+    paddingVertical: 0,
+    backgroundColor: themeColors.surface,
+    borderRadius: 18,
+    borderWidth: 0,
+    ...Platform.select({
+      ios: {
+        shadowColor: '#0f172a',
+        shadowOffset: { width: 0, height: 2 },
+        shadowOpacity: 0.07,
+        shadowRadius: 10,
+      },
+      android: { elevation: 3 },
+    }),
+  },
+  searchCollapsedMain: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    minWidth: 0,
+  },
+  searchCollapsedText: {
+    flex: 1,
+    fontSize: 15,
+    fontWeight: '500',
+    lineHeight: 20,
+    color: themeColors.textSecondary,
+    minWidth: 0,
+  },
+  searchCollapsedClear: {
+    padding: spacing.xxs,
+    marginRight: spacing.xxs,
+  },
+  searchCollapsedChevron: {
+    padding: spacing.xxs,
+    marginLeft: spacing.xxs,
+  },
+  searchFilterBtn: {
+    width: POS_HEADER_ROW_HEIGHT - 8,
+    height: POS_HEADER_ROW_HEIGHT - 8,
+    borderRadius: 16,
+    backgroundColor: themeColors.surface,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 0,
+    ...Platform.select({
+      ios: {
+        shadowColor: '#0f172a',
+        shadowOffset: { width: 0, height: 2 },
+        shadowOpacity: 0.07,
+        shadowRadius: 8,
+      },
+      android: { elevation: 3 },
+    }),
+  },
+  searchFilterBtnActive: {
+    backgroundColor: themeColors.posAccentMuted,
+    borderColor: ACCENT,
+    borderWidth: 1.5,
   },
   main: {
     flex: 1,
   },
   mainContent: {
-    paddingBottom: 100,
+    paddingBottom: 128,
   },
-  fab: {
+  floatingCartBar: {
     position: 'absolute',
-    right: spacing.lg,
-    width: 56,
-    height: 56,
-    borderRadius: radius.md,
+    minHeight: 58,
+    borderRadius: 999,
+    backgroundColor: FLOATING_BAR_BG,
+    justifyContent: 'center',
+    ...Platform.select({
+      ios: {
+        shadowColor: '#0f172a',
+        shadowOffset: { width: 0, height: 8 },
+        shadowOpacity: 0.22,
+        shadowRadius: 16,
+      },
+      android: { elevation: 10 },
+    }),
+  },
+  floatingCartBarEmpty: {
+    alignSelf: 'center',
+    width: 58,
+    height: 58,
+    minHeight: 58,
+    borderRadius: 29,
+    paddingHorizontal: 0,
+  },
+  floatingCartBarInner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 12,
+    paddingLeft: 20,
+    paddingRight: 8,
+  },
+  floatingCartBarTextCol: {
+    flex: 1,
+    minWidth: 0,
+    paddingRight: spacing.sm,
+  },
+  floatingCartBarKicker: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: 'rgba(248,250,252,0.72)',
+    letterSpacing: 0.2,
+  },
+  floatingCartBarTotal: {
+    fontSize: 20,
+    fontWeight: '800',
+    color: '#fff',
+    marginTop: 2,
+    letterSpacing: -0.4,
+  },
+  floatingCartBarCtaCircle: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
     backgroundColor: ACCENT,
     alignItems: 'center',
     justifyContent: 'center',
-    ...shadowMd,
   },
-  fabEmoji: {
-    fontSize: 26,
-    textAlign: 'center',
-  },
-  fabBadge: {
-    position: 'absolute',
-    top: -spacing.xxs,
-    right: -spacing.xxs,
-    minWidth: 20,
-    height: 20,
-    borderRadius: radius.sm,
-    backgroundColor: themeColors.surface,
-    borderWidth: 2,
-    borderColor: ACCENT,
+  floatingCartBarEmptyInner: {
+    flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
-    paddingHorizontal: spacing.xxs,
-  },
-  fabBadgeText: {
-    ...typography.chip,
-    fontSize: 11,
-    color: ACCENT,
+    backgroundColor: ACCENT,
+    borderRadius: 29,
   },
   cartSheetContainer: {
     flex: 1,
@@ -1270,9 +3143,11 @@ const styles = StyleSheet.create({
   },
   cartSheet: {
     backgroundColor: themeColors.surface,
-    borderTopLeftRadius: radius.xl,
-    borderTopRightRadius: radius.xl,
+    borderTopLeftRadius: radius.xl + 6,
+    borderTopRightRadius: radius.xl + 6,
     overflow: 'hidden',
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: themeColors.border,
     ...shadowMd,
   },
   cartSheetHandle: {
@@ -1287,21 +3162,95 @@ const styles = StyleSheet.create({
   },
   cartSheetHeader: {
     flexDirection: 'row',
-    alignItems: 'center',
+    alignItems: 'flex-start',
     paddingHorizontal: spacing.lg,
-    paddingBottom: spacing.sm,
+    paddingBottom: spacing.md,
+    gap: spacing.sm,
+  },
+  cartSheetTitleBlock: {
+    flex: 1,
+    minWidth: 0,
   },
   cartSheetTitleRow: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: spacing.xs,
+    flexWrap: 'wrap',
+  },
+  cartSheetSubtitle: {
+    ...typography.caption,
+    fontSize: 13,
+    fontWeight: '600',
+    color: themeColors.textMuted,
+    marginTop: 4,
   },
   cartBadgeMargin: {
     marginLeft: 0,
   },
   cartSheetCloseBtn: {
     marginLeft: 'auto',
-    padding: spacing.xxs,
+    marginTop: 0,
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: themeColors.surfaceTertiary,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  addToastWrap: {
+    position: 'absolute',
+    left: spacing.md,
+    right: spacing.md,
+    zIndex: 50,
+    alignItems: 'center',
+  },
+  addToast: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    maxWidth: '100%',
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    borderRadius: 16,
+    backgroundColor: themeColors.dark,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(255,255,255,0.12)',
+    ...Platform.select({
+      ios: {
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 8 },
+        shadowOpacity: 0.2,
+        shadowRadius: 16,
+      },
+      android: { elevation: 12 },
+    }),
+  },
+  addToastIcon: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: ACCENT,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  addToastTextCol: {
+    flex: 1,
+    minWidth: 0,
+  },
+  addToastKicker: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: 'rgba(148, 163, 184, 0.95)',
+    textTransform: 'uppercase',
+    letterSpacing: 0.8,
+    marginBottom: 2,
+  },
+  addToastTitle: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#f8fafc',
+    lineHeight: 21,
+    letterSpacing: -0.2,
   },
   cartSheetScroll: {
     flex: 1,
@@ -1311,7 +3260,8 @@ const styles = StyleSheet.create({
     paddingBottom: spacing.xl,
   },
   foodList: {
-    paddingHorizontal: spacing.md,
+    flex: 1,
+    paddingTop: spacing.xs,
   },
   foodGrid: {
     flexDirection: 'row',
@@ -1321,69 +3271,8 @@ const styles = StyleSheet.create({
     paddingHorizontal: 0,
   },
   foodCardWrapper: {
-    padding: spacing.xs,
-    minHeight: 148,
-  },
-  foodCardOuter: {
-    flex: 1,
-  },
-  foodCard: {
-    flex: 1,
-    backgroundColor: themeColors.surface,
-    borderRadius: 14,
-    overflow: 'hidden',
-    minHeight: 160,
-    ...shadowSm,
-    borderWidth: 0,
-  },
-  foodCardImageWrap: {
-    width: '100%',
-    aspectRatio: 1,
-    backgroundColor: themeColors.surfaceSecondary,
-    position: 'relative',
-  },
-  foodCardPlaceholder: {
-    ...StyleSheet.absoluteFillObject,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: themeColors.surfaceTertiary,
-  },
-  foodCardPlaceholderHidden: {
-    opacity: 0,
-    pointerEvents: 'none',
-  },
-  foodCardPlaceholderText: {
-    fontSize: 20,
-    fontWeight: '700',
-    color: themeColors.textMuted,
-    letterSpacing: 0.3,
-  },
-  foodCardPriceBadge: {
-    position: 'absolute',
-    bottom: spacing.xs,
-    right: spacing.xs,
-    backgroundColor: ACCENT,
-    paddingHorizontal: spacing.sm,
-    paddingVertical: spacing.xxs,
-    borderRadius: 8,
-    zIndex: 1,
-  },
-  foodCardPriceText: {
-    ...typography.price,
-    fontSize: 13,
-    fontWeight: '700',
-    color: themeColors.primaryContrast,
-  },
-  foodCardContent: {
-    paddingHorizontal: spacing.sm,
-    paddingVertical: spacing.xs,
-    paddingBottom: spacing.sm,
-  },
-  foodCardName: {
-    ...typography.bodySemibold,
-    fontSize: 14,
-    color: themeColors.text,
-    lineHeight: 20,
+    padding: 8,
+    minHeight: 0,
   },
   priceChip: {
     position: 'absolute',
@@ -1440,8 +3329,10 @@ const styles = StyleSheet.create({
     textAlign: 'center',
   },
   cartTitle: {
-    ...typography.h2,
+    fontSize: 22,
+    fontWeight: '800',
     color: themeColors.text,
+    letterSpacing: -0.5,
   },
   cartEmptyEmoji: {
     fontSize: 44,
@@ -1450,9 +3341,7 @@ const styles = StyleSheet.create({
   cartRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingVertical: spacing.sm,
-    borderBottomWidth: 1,
-    borderBottomColor: themeColors.borderLight,
+    paddingVertical: spacing.xs,
   },
   cartName: {
     flex: 1,
@@ -1465,12 +3354,23 @@ const styles = StyleSheet.create({
     gap: spacing.xxs,
   },
   qtyBtn: {
-    width: 36,
-    height: 36,
-    borderRadius: radius.xs,
-    backgroundColor: themeColors.primaryLight,
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: themeColors.surface,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: themeColors.border,
     alignItems: 'center',
     justifyContent: 'center',
+    ...Platform.select({
+      ios: {
+        shadowColor: '#0f172a',
+        shadowOffset: { width: 0, height: 1 },
+        shadowOpacity: 0.05,
+        shadowRadius: 2,
+      },
+      android: { elevation: 1 },
+    }),
   },
   cartQty: {
     ...typography.price,
@@ -1484,7 +3384,11 @@ const styles = StyleSheet.create({
     marginLeft: spacing.sm,
   },
   cartRowWrap: {
-    borderBottomWidth: 1,
+    marginBottom: 0,
+    paddingVertical: spacing.md,
+    paddingHorizontal: 0,
+    backgroundColor: 'transparent',
+    borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: themeColors.borderLight,
   },
   cartRowLeft: {
@@ -1498,7 +3402,7 @@ const styles = StyleSheet.create({
     marginTop: spacing.xs,
   },
   modifierChip: {
-    backgroundColor: themeColors.primaryMuted,
+    backgroundColor: themeColors.posAccentMuted,
     paddingHorizontal: spacing.xs,
     paddingVertical: spacing.xxs,
     borderRadius: radius.xs,
@@ -1517,7 +3421,7 @@ const styles = StyleSheet.create({
     paddingVertical: spacing.xs,
     paddingHorizontal: spacing.sm,
     alignSelf: 'flex-start',
-    backgroundColor: themeColors.primaryMuted,
+    backgroundColor: themeColors.posAccentMuted,
     borderRadius: radius.xs,
   },
   modifiersBtnText: {
@@ -1528,7 +3432,10 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: spacing.sm,
-    marginTop: spacing.xs,
+    marginTop: spacing.sm,
+    paddingTop: spacing.sm,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: themeColors.borderLight,
   },
   removeItemBtn: {
     flexDirection: 'row',
@@ -1595,14 +3502,31 @@ const styles = StyleSheet.create({
     ...typography.total,
     color: ACCENT,
   },
+  addMoreFromCartBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: spacing.sm,
+    paddingVertical: 14,
+    marginBottom: spacing.sm,
+    borderRadius: 14,
+    borderWidth: 1.5,
+    borderColor: 'rgba(13, 148, 136, 0.35)',
+    backgroundColor: themeColors.surface,
+  },
+  addMoreFromCartBtnText: {
+    ...typography.bodySemibold,
+    fontSize: 16,
+    color: ACCENT,
+  },
   submitBtn: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
     gap: spacing.sm,
     backgroundColor: ACCENT,
-    borderRadius: radius.sm,
-    paddingVertical: spacing.md,
+    borderRadius: 14,
+    paddingVertical: spacing.md + 2,
     marginBottom: spacing.sm,
   },
   submitBtnText: {
@@ -1705,10 +3629,232 @@ const styles = StyleSheet.create({
   },
   modifiersModalCard: {
     backgroundColor: themeColors.surface,
-    borderTopLeftRadius: radius.xl,
-    borderTopRightRadius: radius.xl,
-    padding: spacing.lg,
-    maxHeight: '80%',
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    paddingHorizontal: spacing.lg,
+    paddingTop: spacing.lg,
+    paddingBottom: spacing.lg,
+    maxHeight: '88%',
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: themeColors.border,
+  },
+  variantModalRoot: {
+    flex: 1,
+    justifyContent: 'flex-end',
+    backgroundColor: themeColors.overlay,
+  },
+  variantFullSheet: {
+    width: '100%',
+    borderTopLeftRadius: 28,
+    borderTopRightRadius: 28,
+    overflow: 'hidden',
+    backgroundColor: themeColors.surface,
+    ...Platform.select({
+      ios: {
+        shadowColor: '#0f172a',
+        shadowOffset: { width: 0, height: -4 },
+        shadowOpacity: 0.12,
+        shadowRadius: 16,
+      },
+      android: { elevation: 12 },
+    }),
+  },
+  variantHero: {
+    backgroundColor: themeColors.dark,
+    paddingHorizontal: spacing.lg,
+    paddingBottom: 20,
+    alignItems: 'center',
+  },
+  variantHeroClose: {
+    position: 'absolute',
+    left: spacing.md,
+    zIndex: 4,
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: 'rgba(255,255,255,0.14)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  variantHeroImageShell: {
+    width: '100%',
+    height: 148,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 8,
+  },
+  variantHeroImage: {
+    width: '100%',
+    height: '100%',
+  },
+  variantHeroPlaceholder: {
+    width: 120,
+    height: 120,
+    borderRadius: 60,
+    backgroundColor: 'rgba(255,255,255,0.08)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.12)',
+  },
+  variantHeroMonogramText: {
+    fontSize: 44,
+    fontWeight: '700',
+    color: 'rgba(255,255,255,0.45)',
+  },
+  variantHeroTitle: {
+    fontSize: 22,
+    fontWeight: '800',
+    color: '#f8fafc',
+    textAlign: 'center',
+    letterSpacing: -0.4,
+    lineHeight: 28,
+    paddingHorizontal: spacing.sm,
+  },
+  variantHeroSubtitle: {
+    ...typography.body,
+    fontSize: 14,
+    color: 'rgba(248,250,252,0.55)',
+    textAlign: 'center',
+    marginTop: 8,
+    lineHeight: 20,
+    paddingHorizontal: spacing.md,
+  },
+  variantHeroPrice: {
+    fontSize: 26,
+    fontWeight: '800',
+    color: ACCENT,
+    marginTop: 14,
+    letterSpacing: -0.5,
+  },
+  variantSheetBody: {
+    flex: 1,
+    backgroundColor: themeColors.surface,
+    borderTopLeftRadius: 28,
+    borderTopRightRadius: 28,
+    marginTop: -22,
+    paddingTop: 10,
+    paddingHorizontal: 0,
+  },
+  variantSheetHandleLight: {
+    width: 40,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: themeColors.border,
+    alignSelf: 'center',
+    marginBottom: spacing.sm,
+  },
+  variantOptionsSectionTitle: {
+    fontSize: 18,
+    fontWeight: '800',
+    color: themeColors.text,
+    letterSpacing: -0.35,
+    paddingHorizontal: spacing.lg,
+    marginBottom: spacing.xs,
+  },
+  variantOptionsScroll: {
+    flex: 1,
+    minHeight: 80,
+  },
+  variantOptionsScrollContent: {
+    paddingHorizontal: spacing.lg,
+    paddingBottom: spacing.md,
+  },
+  variantChipScroll: {
+    flexDirection: 'row',
+    gap: 10,
+    paddingVertical: 2,
+    paddingRight: spacing.lg,
+  },
+  variantSegmentChip: {
+    maxWidth: 160,
+    minWidth: 100,
+    paddingVertical: 14,
+    paddingHorizontal: 14,
+    borderRadius: 16,
+    backgroundColor: themeColors.surfaceSecondary,
+    borderWidth: 1.5,
+    borderColor: themeColors.border,
+  },
+  variantSegmentChipSelected: {
+    borderColor: ACCENT,
+    backgroundColor: themeColors.posAccentMuted,
+  },
+  variantSegmentChipName: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: themeColors.text,
+  },
+  variantSegmentChipNameSelected: {
+    color: themeColors.posAccentDark,
+  },
+  variantSegmentChipDelta: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: themeColors.textMuted,
+    marginTop: 6,
+  },
+  variantSegmentChipDeltaSelected: {
+    color: ACCENT,
+  },
+  variantFooterBar: {
+    backgroundColor: FLOATING_BAR_BG,
+    paddingHorizontal: spacing.lg,
+    paddingTop: 14,
+    paddingBottom: 4,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: 'rgba(255,255,255,0.08)',
+  },
+  variantFooterRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  variantStepperPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: 'rgba(255,255,255,0.12)',
+    borderRadius: 999,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+  },
+  variantStepperLabel: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: 'rgba(248,250,252,0.75)',
+    marginRight: 4,
+  },
+  variantStepperBtn: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: 'rgba(255,255,255,0.16)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  variantStepperValue: {
+    fontSize: 17,
+    fontWeight: '800',
+    color: '#fff',
+    minWidth: 28,
+    textAlign: 'center',
+  },
+  variantFooterCta: {
+    flex: 1,
+    minWidth: 0,
+    backgroundColor: ACCENT,
+    borderRadius: 16,
+    paddingVertical: 16,
+    paddingHorizontal: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  variantFooterCtaText: {
+    fontSize: 15,
+    fontWeight: '800',
+    color: themeColors.primaryContrast,
+    letterSpacing: -0.2,
   },
   modifiersModalHeader: {
     flexDirection: 'row',
@@ -1717,16 +3863,24 @@ const styles = StyleSheet.create({
     marginBottom: spacing.md,
   },
   modifiersModalTitle: {
-    ...typography.h2,
+    fontSize: 20,
+    fontWeight: '700',
     color: themeColors.text,
+    letterSpacing: -0.35,
+    lineHeight: 26,
   },
   modifiersModalSubtitle: {
     ...typography.body,
     color: themeColors.textMuted,
-    marginTop: 2,
+    marginTop: 8,
   },
   modifiersModalClose: {
-    padding: spacing.xxs,
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: themeColors.surfaceTertiary,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   modifiersModalScroll: {
     maxHeight: 360,
@@ -1806,9 +3960,16 @@ const styles = StyleSheet.create({
     ...typography.caption,
     color: themeColors.primaryContrast,
   },
+  variantGroupTitle: {
+    ...typography.captionMuted,
+    fontWeight: '700',
+    letterSpacing: 0.4,
+    marginBottom: spacing.xs,
+    color: themeColors.textSubtle,
+  },
   modifiersDoneBtn: {
     backgroundColor: ACCENT,
-    borderRadius: radius.sm,
+    borderRadius: 12,
     paddingVertical: spacing.md,
     alignItems: 'center',
     justifyContent: 'center',
@@ -1816,5 +3977,63 @@ const styles = StyleSheet.create({
   modifiersDoneBtnText: {
     ...typography.bodySemibold,
     color: themeColors.primaryContrast,
+  },
+  variantGroupBlock: {
+    marginBottom: spacing.lg,
+  },
+  variantRowList: {
+    borderRadius: 12,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: themeColors.border,
+    overflow: 'hidden',
+    backgroundColor: themeColors.surface,
+  },
+  variantRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    minHeight: 52,
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: themeColors.borderLight,
+    backgroundColor: themeColors.surface,
+  },
+  variantRowSelected: {
+    backgroundColor: themeColors.surfaceSecondary,
+  },
+  variantRowLast: {
+    borderBottomWidth: 0,
+  },
+  variantRadioOuter: {
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    borderWidth: 2,
+    borderColor: themeColors.border,
+    marginRight: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  variantRadioOuterSelected: {
+    borderColor: ACCENT,
+  },
+  variantRadioInner: {
+    width: 11,
+    height: 11,
+    borderRadius: 6,
+    backgroundColor: ACCENT,
+  },
+  variantRowName: {
+    ...typography.bodySemibold,
+    flex: 1,
+    fontSize: 16,
+    color: themeColors.text,
+    paddingRight: spacing.sm,
+  },
+  variantRowDelta: {
+    ...typography.caption,
+    fontSize: 13,
+    fontWeight: '700',
+    color: themeColors.textMuted,
   },
 });

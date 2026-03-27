@@ -117,6 +117,7 @@
 			isa = PBXNativeTarget;
 			buildConfigurationList = 13B07F931A680F5B00A75B9A /* Build configuration list for PBXNativeTarget "NRestoMobile" */;
 			buildPhases = (
+				VRSBMP001E5F6789012345678 /* Version Bump */,
 				C38B50BA6285516D6DCD4F65 /* [CP] Check Pods Manifest.lock */,
 				13B07F871A680F5B00A75B9A /* Sources */,
 				13B07F8C1A680F5B00A75B9A /* Frameworks */,
@@ -180,6 +181,21 @@
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXShellScriptBuildPhase section */
+		VRSBMP001E5F6789012345678 /* Version Bump */ = {
+			isa = PBXShellScriptBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputPaths = (
+			);
+			name = "Version Bump";
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "cd \"$SRCROOT/..\" && node scripts/version-bump.js\nVERSION=$(node -p \"require('./version.json').version\")\nBUILD=$(node -p \"require('./version.json').buildNumber\")\n/usr/libexec/PlistBuddy -c \"Set :CFBundleShortVersionString $VERSION\" \"$SRCROOT/NRestoMobile/Info.plist\"\n/usr/libexec/PlistBuddy -c \"Set :CFBundleVersion $BUILD\" \"$SRCROOT/NRestoMobile/Info.plist\"\n";
+			showEnvVarsInLog = 0;
+		};
 		00DD1BFF1BD5951E006B06BC /* Bundle React Native code and images */ = {
 			isa = PBXShellScriptBuildPhase;
 			buildActionMask = 2147483647;

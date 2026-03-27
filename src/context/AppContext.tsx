@@ -27,6 +27,11 @@ import {
   INITIAL_POS_SESSION,
 } from '../types/pos';
 import type { FoodItem } from '../constants/demoData';
+import type {
+  CatalogItemPrice,
+  CatalogModifierGroup,
+  CatalogVariantGroup,
+} from '../types/posCatalog';
 import { storeConfig } from '../constants/storeConfig';
 import {
   requestOrderUploadNow,
@@ -77,6 +82,25 @@ function normalizeCartItem(entry: unknown): CartItem | null {
           ? m.price
           : Number(String(m.price ?? '').replace(/,/g, '')) || 0,
     }));
+  const pricesRaw = f.pricesByChannel;
+  const pricesByChannel = Array.isArray(pricesRaw)
+    ? (pricesRaw.filter(
+        (x): x is CatalogItemPrice =>
+          x != null &&
+          typeof x === 'object' &&
+          typeof (x as CatalogItemPrice).channel === 'string' &&
+          typeof (x as CatalogItemPrice).amount === 'number',
+      ) as CatalogItemPrice[])
+    : undefined;
+  const variantRaw = f.variantGroups;
+  const variantGroups = Array.isArray(variantRaw)
+    ? (variantRaw as CatalogVariantGroup[])
+    : undefined;
+  const modGrpRaw = f.modifierGroups;
+  const modifierGroups = Array.isArray(modGrpRaw)
+    ? (modGrpRaw as CatalogModifierGroup[])
+    : undefined;
+
   const food: FoodItem = {
     id,
     item_name,
@@ -84,6 +108,9 @@ function normalizeCartItem(entry: unknown): CartItem | null {
     price,
     status: typeof f.status === 'boolean' ? f.status : true,
     category: typeof f.category === 'string' ? f.category : '',
+    ...(pricesByChannel?.length ? { pricesByChannel } : {}),
+    ...(variantGroups?.length ? { variantGroups } : {}),
+    ...(modifierGroups?.length ? { modifierGroups } : {}),
   };
   return { food, qty, modifiers: modifiers.length ? modifiers : undefined };
 }
@@ -365,6 +392,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           r.created_by = order.userId;
           r.company_id = order.companyId || (storeConfig.masterDataCompanyId ?? '').trim() || null;
           r.items = JSON.stringify(order.items);
+          r.order_sync_status = false;
         });
         createdLocalId = newOrder.id;
         await queueCollection.create((q) => {
@@ -409,6 +437,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
             if (payload.status === 'PAID') r.paid_at = Date.now();
           }
           if (payload.paymentMethod != null) r.payment_method = payload.paymentMethod;
+          r.order_sync_status = false;
         });
       });
       await enqueueOrderForSync(payload.orderId);
@@ -432,6 +461,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         await order.update((r) => {
           r.items = JSON.stringify(newItems);
           r.total = newTotal;
+          r.order_sync_status = false;
         });
       });
       await enqueueOrderForSync(payload.orderId);
@@ -445,11 +475,15 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const clearOrderHistory = useCallback(async () => {
     const ordersCollection = database.get<Order>('orders');
     const queueCollection = database.get<OrderSyncQueue>('order_sync_queue');
-    const all = await ordersCollection.query().fetch();
-    const qrows = await queueCollection.query().fetch();
+    const syncedOrders = await ordersCollection.query(Q.where('order_sync_status', true)).fetch();
+    const syncedIds = syncedOrders.map((o) => o.id);
+    const qrows =
+      syncedIds.length > 0
+        ? await queueCollection.query(Q.where('order_id', Q.oneOf(syncedIds))).fetch()
+        : [];
     await database.write(async () => {
       for (const q of qrows) await q.destroyPermanently();
-      for (const o of all) await o.destroyPermanently();
+      for (const o of syncedOrders) await o.destroyPermanently();
     });
     await refreshOrders();
   }, [refreshOrders]);

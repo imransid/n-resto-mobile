@@ -22,9 +22,13 @@ import { storeConfig } from './src/constants/storeConfig';
 import { startOrderBackgroundSync } from './src/services/orderBackgroundSyncService';
 import { startPaidOrdersCleanup } from './src/services/paidOrdersCleanupService';
 
-/** Defer until after initial paint (replacement for deprecated InteractionManager.runAfterInteractions). */
+/** Defer until after initial paint to avoid blocking first frame. */
 function afterInitialFrame(): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, 0));
+  return new Promise((resolve) =>
+    require('react-native').InteractionManager.runAfterInteractions(() =>
+      setTimeout(resolve, 0)
+    )
+  );
 }
 
 async function loadMasterDataWithFallback(): Promise<void> {
@@ -74,15 +78,16 @@ export default function App() {
   const [showApp, setShowApp] = useState(false);
   const onSplashFinish = useCallback(() => setShowApp(true), []);
 
-  /** Register sync + WorkManager + paid-order cleanup as soon as JS loads. */
+  /** Defer sync + cleanup until after app is visible to keep startup fast. */
   useEffect(() => {
+    if (!showApp) return;
     const unsubSync = startOrderBackgroundSync();
     const unsubCleanup = startPaidOrdersCleanup();
     return () => {
       unsubSync();
       unsubCleanup();
     };
-  }, []);
+  }, [showApp]);
 
   const masterDataPromise = useMemo(() => {
     if (storeConfig.graphqlApiBase?.trim()) {

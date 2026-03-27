@@ -3,6 +3,7 @@
  * Fetch from API when base URL is set; otherwise prefer WatermelonDB rows synced from getMasterData, then demo list.
  */
 
+import { Platform } from 'react-native';
 import { database } from '../database/databaseInstance';
 import type Customer from '../database/Customer';
 
@@ -28,7 +29,11 @@ export async function getCustomers(apiBase?: string): Promise<CustomerItem[]> {
     return FALLBACK_CUSTOMERS;
   }
   try {
-    const url = `${base.replace(/\/$/, '')}/customers`;
+    const normalizedBase =
+      Platform.OS === 'android' && (base.includes('localhost') || base.includes('127.0.0.1'))
+        ? base.replace(/localhost|127\.0\.0\.1/g, '10.0.2.2')
+        : base;
+    const url = `${normalizedBase.replace(/\/$/, '')}/customers`;
     const res = await fetch(url, { method: 'GET', headers: { Accept: 'application/json' } });
     if (!res.ok) return FALLBACK_CUSTOMERS;
     const data = await res.json();

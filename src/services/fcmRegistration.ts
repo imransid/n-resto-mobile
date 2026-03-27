@@ -8,6 +8,7 @@ import {
   unregisterAuthServicePushDevice,
 } from './authNotificationsApi';
 import { getOrCreateDeviceId } from './masterDataService';
+import { shouldReceivePushForAuthUser } from './fcmAdminGate';
 
 async function ensureAndroidPostNotifications(): Promise<boolean> {
   if (Platform.OS !== 'android' || Platform.Version < 33) return true;
@@ -38,7 +39,7 @@ async function registerTokenWithAuthService(token: string, auth: AuthState): Pro
 }
 
 export async function registerDeviceForFcm(auth: AuthState): Promise<string | null> {
-  if (!auth.isAuthenticated) return null;
+  if (!auth.isAuthenticated || !shouldReceivePushForAuthUser(auth.user)) return null;
 
   await ensureAndroidPostNotifications();
 
@@ -71,8 +72,10 @@ export function subscribeFcmForeground(
 
 export function subscribeFcmTokenRefresh(getAuth: () => AuthState): () => void {
   return messaging().onTokenRefresh(async (newToken) => {
+    const auth = getAuth();
+    if (!shouldReceivePushForAuthUser(auth.user)) return;
     try {
-      await registerTokenWithAuthService(newToken, getAuth());
+      await registerTokenWithAuthService(newToken, auth);
     } catch (e) {
       if (__DEV__) console.warn('[FCM] auth-service token refresh register failed', e);
     }

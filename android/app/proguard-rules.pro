@@ -1,10 +1,16 @@
-# Add project specific ProGuard rules here.
-# By default, the flags in this file are appended to flags specified
-# in /usr/local/Cellar/android-sdk/24.3.3/tools/proguard/proguard-android.txt
-# You can edit the include path and order by changing the proguardFiles
-# directive in build.gradle.
-#
-# For more details, see
-#   http://developer.android.com/guide/developing/tools/proguard.html
+# React Native
+-keep class com.facebook.react.** { *; }
+-keep class com.facebook.hermes.** { *; }
+-keep class com.facebook.jni.** { *; }
 
-# Add any project specific keep options here:
+# Keep native modules (reflection-based)
+-keep class com.nrestomobile.ThermalPrinterModule { *; }
+-keep class com.nrestomobile.ThermalPrinterPackage { *; }
+-keep class com.nrestomobile.ImageDownloadModule { *; }
+-keep class com.nrestomobile.ImageDownloadPackage { *; }
+-keep class com.nrestomobile.OrderSyncMonitorModule { *; }
+-keep class com.nrestomobile.OrderSyncMonitorPackage { *; }
+-keep class com.nrestomobile.OrderSyncHeadlessService { *; }
+
+# Keep ReactPackage implementations
+-keep class * implements com.facebook.react.ReactPackage { *; }
